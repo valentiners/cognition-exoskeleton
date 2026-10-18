@@ -89,14 +89,25 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+const DEFAULT_PLACEHOLDER = '描述一个事物，或配上图片问我看到了什么…';
+const IMAGE_PLACEHOLDER = '图片已就绪 ✓ 请输入你的指示，和图片一起发送（如：这是谁？帮我记住它）';
+
 function stageImage(file) {
   const reader = new FileReader();
   reader.onload = () => {
     stagedImage = reader.result;
     preview.innerHTML = `<img src="${stagedImage}"><span class="x" id="rm-img">✕ 移除图片</span>`;
-    document.getElementById('rm-img').onclick = () => { stagedImage = null; preview.innerHTML = ''; };
+    input.placeholder = IMAGE_PLACEHOLDER;
+    document.getElementById('rm-img').onclick = unstageImage;
+    input.focus();
   };
   reader.readAsDataURL(file);
+}
+
+function unstageImage() {
+  stagedImage = null;
+  preview.innerHTML = '';
+  input.placeholder = DEFAULT_PLACEHOLDER;
 }
 
 attachBtn.onclick = () => fileInput.click();
@@ -129,7 +140,7 @@ async function post(url, body, isResponse) {
     else {
       addMsg('master', body.text, '', body.image);
       pending = !!(d.actions && d.actions.length);  // 仅当有裁决按钮时才进入等待状态
-      stagedImage = null; preview.innerHTML = '';
+      unstageImage();
     }
     const bubble = addMsg('soul', d.say || '', d.debug || '');
     renderActions(bubble, d.actions);
@@ -144,6 +155,12 @@ async function post(url, body, isResponse) {
 
 function submit() {
   const t = input.value.trim();
+  // Kimi 模式：图片先暂存，必须等主人的指示，图文一起发送
+  if (stagedImage && !t) {
+    input.placeholder = '请先输入对这张图的指示，再发送 ✏️';
+    input.focus();
+    return;
+  }
   if (!t && !stagedImage) return;
   input.value = '';
   if (pending) post('/api/respond', {value: t}, true);
