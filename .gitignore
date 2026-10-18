@@ -5,3 +5,6 @@ memory.json
 dist/
 build/
 *.egg-info/
+
+# 测试日志
+*.log
