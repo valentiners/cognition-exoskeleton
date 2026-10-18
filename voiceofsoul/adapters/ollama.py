@@ -109,6 +109,24 @@ class OllamaBaseModel:
             return None
         return ans
 
+    def answer_question(self, question: str) -> str | None:
+        """常识问答直通：基础模型能覆盖的知识直接回答，不进入记忆流程。
+
+        对应设计文档 4.1 主规则——事务能被基础模型压缩知识完整覆盖 → 不建条目。
+        """
+        prompt = (
+            "请用两三句话简洁准确地回答下面的问题。如果这是你的常识范围内的知识，"
+            "直接回答；只有当你确实完全不掌握相关知识时才回答「不了解」。\n"
+            f"问题：{question}"
+        )
+        try:
+            ans = self._generate(prompt, timeout=180)
+        except OSError:
+            return None
+        if not ans or ans.strip() in ("不了解", "不知道"):
+            return None
+        return ans
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         """感知通道 A（设计文档 3.1）：图像 → 视觉模型 → 统一结构化描述。
 

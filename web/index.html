@@ -113,7 +113,11 @@ async function post(url, body, isResponse) {
                                 body: JSON.stringify(body)});
     const d = await r.json();
     if (isResponse) pending = false;
-    else { addMsg('master', body.text, '', body.image); pending = true; stagedImage = null; preview.innerHTML = ''; }
+    else {
+      addMsg('master', body.text, '', body.image);
+      pending = !!(d.actions && d.actions.length);  // 仅当有裁决按钮时才进入等待状态
+      stagedImage = null; preview.innerHTML = '';
+    }
     const bubble = addMsg('soul', d.say || '', d.debug || '');
     renderActions(bubble, d.actions);
     document.getElementById('pending-hint').textContent = d.actions && d.actions.length ? '等待主人裁决…' : '';

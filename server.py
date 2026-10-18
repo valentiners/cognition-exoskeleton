@@ -20,6 +20,8 @@ from voiceofsoul.adapters import OllamaBaseModel, OllamaEmbedder
 
 WEB_DIR = Path(__file__).parent / "web"
 EXIT_VALUES = {"退出", "exit", "quit"}
+# 常识问句特征：直通基础模型回答，不进识别/记忆流程
+QA_PATTERN = re.compile(r"(是什么|什么是|为什么|怎么|如何|哪里|谁|吗|呢|么|？|\?)")
 
 # ------------------------------------------------------------------ 全局状态
 # 单主人原则：一个服务实例只服务一个主人，会话状态即全局状态。
@@ -51,6 +53,13 @@ def make_handlers(cog: CognitiveModule):
         return {"say": text, "actions": actions or [], "debug": debug}
 
     def chat(text: str, image_b64: str | None = None) -> dict:
+        # 常识问答直通：纯问题不进识别/记忆流程，基础模型能答就直接答
+        # （设计文档 4.1 主规则：能被基础模型完整覆盖 → 不建条目）
+        if not image_b64 and QA_PATTERN.search(text):
+            ans = getattr(cog.base, "answer_question", lambda _: None)(text)
+            if ans:
+                return say(f"【常识问答】{ans}",
+                           debug="action=QA_PASS（基础模型覆盖，不走记忆流程）")
         # 感知通道 A：图像先经视觉模型转为统一描述，再走同一条比对流程
         if image_b64:
             desc = cog.base.perceive_image(image_b64, text)
@@ -231,10 +240,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8600)
     ap.add_argument("--base-model", default="Qwen3.8:latest")
-    ap.add_argument("--embedding-model", default="mxbai-embed-large")
+    ap.add_argument("--embedding-model", default="embeddinggemma-2:latest")
     ap.add_argument("--ollama", default="http://localhost:11434")
     ap.add_argument("--memory", default="memory.json")
-    ap.add_argument("--mem-th", type=float, default=0.70,
+    ap.add_argument("--mem-th", type=float, default=0.78,
                     help="记忆库命中阈值（需按所用编码器标定，设计文档 5.3）")
     ap.add_argument("--base-th", type=float, default=0.51,
                     help="基础模型猜测阈值")
