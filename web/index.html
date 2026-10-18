@@ -25,8 +25,17 @@
   #input-inner { max-width: 820px; margin: 0 auto; display: flex; gap: 10px; align-items: center; }
   #text { flex: 1; padding: 10px 14px; border: 1px solid #d8d3ca; border-radius: 20px; font-size: 14px; outline: none; }
   #text:focus { border-color: #1f1d1a; }
-  #send { background: #1f1d1a; color: #fff; border: none; padding: 10px 22px; border-radius: 20px; cursor: pointer; font-size: 14px; }
-  #send:disabled { opacity: .4; cursor: default; }
+  #send { background: #1f1d1a; border: none; width: 44px; height: 38px; border-radius: 20px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  #send svg { width: 24px; height: 24px; fill: #fff; display: block; }
+  /* 等待回复时：猫爪左右摇摆，此时点击=取消任务 */
+  #send.waiting svg { animation: pawSway .45s ease-in-out infinite; transform-origin: 50% 85%; }
+  @keyframes pawSway { 0%,100% { transform: rotate(-20deg); } 50% { transform: rotate(20deg); } }
+  /* 发送中的消息：固定显示在输入框上方，浅灰底，模型返回时消失 */
+  #sending { padding: 0 20px; max-width: 860px; width: 100%; margin: 0 auto; }
+  #sending-inner { display: flex; align-items: center; gap: 10px; background: #eceae6; border: 1px solid #e0ddd7; border-radius: 14px; padding: 10px 14px; margin-bottom: 10px; }
+  #sending-img { max-height: 40px; border-radius: 6px; flex-shrink: 0; }
+  #sending-text { flex: 1; font-size: 14px; color: #6b6660; white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
+  #sending-tag { font-size: 12px; color: #a39e94; flex-shrink: 0; }
   #attach { background: #fff; border: 1px solid #d8d3ca; border-radius: 50%; width: 38px; height: 38px; cursor: pointer; font-size: 17px; line-height: 1; flex-shrink: 0; }
   #attach:hover { border-color: #1f1d1a; }
   #preview { max-width: 820px; margin: 0 auto; width: 100%; }
@@ -48,12 +57,21 @@
 </header>
 <div id="chat"></div>
 <div id="preview"></div>
+<div id="sending" hidden>
+  <div id="sending-inner">
+    <img id="sending-img" hidden>
+    <span id="sending-text"></span>
+    <span id="sending-tag">发送中…（点击右侧猫爪可取消）</span>
+  </div>
+</div>
 <div id="input-bar">
   <div id="input-inner">
     <button id="attach" title="上传图片（也可直接粘贴截图）">📷</button>
     <input type="file" id="file" accept="image/*" hidden>
     <input id="text" placeholder="描述一个事物，或配上图片问我看到了什么…" autocomplete="off" autofocus>
-    <button id="send">发送</button>
+    <button id="send" title="发送">
+      <svg viewBox="0 0 64 64" aria-label="发送"><ellipse cx="32" cy="12" rx="6.5" ry="10"/><ellipse cx="17" cy="25" rx="6.5" ry="8.5"/><ellipse cx="47" cy="25" rx="6.5" ry="8.5"/><path d="M32 34 C22 34 14 42 14 51 C14 59 22 63 32 63 C42 63 50 59 50 51 C50 42 42 34 32 34 Z"/></svg>
+    </button>
   </div>
 </div>
 <div id="model-bar">
@@ -130,14 +148,47 @@ function renderActions(bubble, actions) {
   bubble.appendChild(box);
 }
 
+// ---------------- 发送中状态 / 取消 ----------------
+const sendingBox = document.getElementById('sending');
+const sendingText = document.getElementById('sending-text');
+const sendingImg = document.getElementById('sending-img');
+let inflight = null;  // {controller, restore:{text, image}}
+
+function showSending(text, image) {
+  sendingText.textContent = text;
+  sendingImg.src = image || '';
+  sendingImg.hidden = !image;
+  sendingBox.hidden = false;
+}
+
+function hideSending() {
+  sendingBox.hidden = true;
+  sendingImg.src = '';
+}
+
+// 取消后恢复为待发送草稿：文字放回输入框，图片放回暂存区
+function restoreDraft(text, image) {
+  input.value = text;
+  if (image) {
+    stagedImage = image;
+    preview.innerHTML = `<img src="${image}"><span class="x" id="rm-img">✕ 移除图片</span>`;
+    document.getElementById('rm-img').onclick = unstageImage;
+    input.placeholder = IMAGE_PLACEHOLDER;
+  }
+}
+
 async function post(url, body, isResponse) {
-  sendBtn.disabled = true;
+  const controller = new AbortController();
+  inflight = {controller, restore: isResponse ? null : {text: body.text, image: body.image || null}};
+  sendBtn.classList.add('waiting');
+  sendBtn.title = '等待回复中…点击取消';
   try {
     const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
-                                body: JSON.stringify(body)});
+                                body: JSON.stringify(body), signal: controller.signal});
     const d = await r.json();
     if (isResponse) pending = false;
     else {
+      hideSending();
       addMsg('master', body.text, '', body.image);
       pending = !!(d.actions && d.actions.length);  // 仅当有裁决按钮时才进入等待状态
       unstageImage();
@@ -146,14 +197,27 @@ async function post(url, body, isResponse) {
     renderActions(bubble, d.actions);
     document.getElementById('pending-hint').textContent = d.actions && d.actions.length ? '等待主人裁决…' : '';
   } catch (e) {
-    addMsg('soul', '⚠️ 服务无响应：请确认 server.py 正在运行、Ollama 已启动，并通过 http://localhost:8600 访问本页。');
+    if (e.name === 'AbortError') {
+      // 主人主动取消：消息恢复为待发送草稿（服务端可能仍在处理本次请求）
+      if (inflight && inflight.restore) {
+        hideSending();
+        restoreDraft(inflight.restore.text, inflight.restore.image);
+        addMsg('soul', '已取消发送，消息和图片已放回输入框。⚠️ 服务端可能仍在处理，稍等片刻再发更稳妥。');
+      }
+    } else {
+      addMsg('soul', '⚠️ 服务无响应：请确认 server.py 正在运行、Ollama 已启动，并通过 http://localhost:8600 访问本页。');
+      if (inflight && inflight.restore) { hideSending(); restoreDraft(inflight.restore.text, inflight.restore.image); }
+    }
   } finally {
-    sendBtn.disabled = false;
+    inflight = null;
+    sendBtn.classList.remove('waiting');
+    sendBtn.title = '发送';
     input.focus();
   }
 }
 
 function submit() {
+  if (inflight) return;  // 等待回复期间不再接受新发送
   const t = input.value.trim();
   // Kimi 模式：图片先暂存，必须等主人的指示，图文一起发送
   if (stagedImage && !t) {
@@ -164,11 +228,14 @@ function submit() {
   if (!t && !stagedImage) return;
   input.value = '';
   if (pending) post('/api/respond', {value: t}, true);
-  else post('/api/chat', {text: t, image: stagedImage}, false);
+  else {
+    showSending(t, stagedImage);
+    post('/api/chat', {text: t, image: stagedImage}, false);
+  }
 }
 
-sendBtn.onclick = submit;
-input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+sendBtn.onclick = () => { if (inflight) inflight.controller.abort(); else submit(); };
+input.addEventListener('keydown', e => { if (e.key === 'Enter' && !inflight) submit(); });
 
 // ---------------- 模型选择 ----------------
 const selBase = document.getElementById('sel-base');
