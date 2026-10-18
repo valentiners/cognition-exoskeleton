@@ -11,7 +11,7 @@ EN: The first "cognitive soul" plug-in for LLMs — conceived by me, designed & 
 ```
 llm, continuous-learning, memory-augmented, agent-memory,
 cognitive-architecture, rag-alternative, lifelong-learning,
-chinese, llm-agent, knowledge-management
+llm-agent, knowledge-management
 ```
 
 ---
