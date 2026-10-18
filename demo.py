@@ -1,34 +1,44 @@
 #!/usr/bin/env python3
-"""自认知外挂 · 命令行交互 Demo（primitive version）
+"""cognition-exoskeleton · interactive CLI demo (primitive version)
 
-你扮演「主人」，内置一个模拟基础模型（带少量常识知识），
-走完「识别 → 仲裁 → 猜测确认 → 补丁/建条目 → 再识别 → 记错误」闭环。
+You play the MASTER (主人); a simulated base model (with a little built-in
+common knowledge) drives the full loop:
+guess → confirm → patch/entry → re-recognize → record mistakes.
 
-运行：python demo.py
+Run: python demo.py
 """
 
 import re
 
 from voiceofsoul import CognitiveModule, HashingEmbedder, MemoryModule
 
+EXIT_CMDS = ("exit", "quit", "退出")
+STATS_CMDS = ("stats", "统计")
+MISTAKE_PREFIXES = ("mistake ", "错误 ")
+
 
 class DemoBaseModel:
-    """模拟已训练好的基础模型：只调用，不改权重。
+    """A simulated pre-trained base model: call-only, weights untouched.
 
-    infer_confidence / infer / describe 三个接口对应设计文档中
-    「基础模型压缩知识」的探测点。替换成真实模型时保持接口即可。
-    置信度用关键词覆盖率 + 基线偏移模拟（演示用，非真实模型行为）。
+    The three methods (infer_confidence / infer / describe) are the probe
+    points for "the base model's compressed knowledge" in the design doc.
+    Swap in a real model behind the same interface to go to production.
+    Confidence here is keyword coverage + an offset — demo simulation,
+    not real model behavior.
     """
 
     KNOWLEDGE = {
-        "猫": "猫是常见的家养宠物，有毛发和尾巴，橘色黑色白色花色，体型小中型",
-        "狗": "狗是常见的家养宠物，有毛发和尾巴，体型小到大型，会吠叫",
-        "汽车": "汽车是常见交通工具，四个轮子，金属外壳，有车窗和车门",
+        "cat": "A cat is a common household pet with fur and a tail, "
+               "orange black white or mixed, small to medium size",
+        "dog": "A dog is a common household pet with fur and a tail, "
+               "small to large size, barks",
+        "car": "A car is a common vehicle with four wheels, a metal body, "
+               "windows and doors",
     }
     KEYWORDS = {
-        "猫": ["猫", "橘", "尾", "毛"],
-        "狗": ["狗", "吠", "尾"],
-        "汽车": ["汽车", "车", "轮", "车窗"],
+        "cat": ["cat", "orange", "tail", "fur"],
+        "dog": ["dog", "bark", "tail"],
+        "car": ["car", "wheel", "window"],
     }
 
     def __init__(self, embedder):
@@ -37,142 +47,160 @@ class DemoBaseModel:
     def infer_confidence(self, text: str) -> float:
         best = 0.0
         for concept, kws in self.KEYWORDS.items():
-            matched = sum(1 for k in kws if k in text)
-            conf = 0.1 + 0.22 * matched + (0.3 if concept in text else 0)
+            matched = sum(1 for k in kws if k in text.lower())
+            conf = 0.1 + 0.22 * matched + (0.3 if concept in text.lower() else 0)
             best = max(best, min(conf, 0.95))
         return best
 
     def infer(self, text: str) -> str:
+        t = text.lower()
         return max(self.KEYWORDS,
-                   key=lambda k: sum(1 for w in self.KEYWORDS[k] if w in text))
+                   key=lambda k: sum(1 for w in self.KEYWORDS[k] if w in t))
 
     def describe(self, name: str) -> str | None:
-        """闸口 2 自检：基础模型能否给出完整稳定描述（认识 → 通名）。"""
-        return self.KNOWLEDGE.get(name)
+        """Gate 2 self-check: can the base model give a full, stable
+        description? (Yes → common noun; None → proper name.)"""
+        return self.KNOWLEDGE.get(name.lower())
 
 
-# ---------------------------------------------------------------- 交互流程
+# ---------------------------------------------------------------- interaction
 
 def finish_entry(cog, name, desc):
-    """闸口 2（专名/通名自检）+ 闸口 3（建库前去重）→ 建条目或转补丁。"""
+    """Gate 2 (proper/common check) + Gate 3 (dedup) → entry or patch."""
     if cog.is_common_knowledge(name):
-        pid = cog.learn_patch(name, {"描述": desc}, patch_type="feature_addition")
-        print(f"  [通名] 「{name}」是基础模型已知概念 → 只存补丁 {pid}，不建条目")
+        pid = cog.learn_patch(name, {"description": desc},
+                              patch_type="feature_addition")
+        print(f"  [common] '{name}' is already known to the base model "
+              f"→ patch {pid} only, no entry (anti-duplication)")
         return
     best = cog.memory.best_match(desc)
     if best and best[1] >= cog.mem_th:
-        cog.merge_into(best[0], desc, note="闸口 3 查重命中 MERGE")
-        print(f"  [查重] 与 {best[0]} 高度相似（{best[1]}）→ MERGE，不建重复条目")
+        cog.merge_into(best[0], desc, note="Gate 3 dedup hit → MERGE")
+        print(f"  [dedup] too similar to {best[0]} ({best[1]}) "
+              f"→ MERGE, no duplicate entry")
         return
     overlap = next((p for p in cog.memory.patches
                     if p["target"] in name or name in p["target"]), None)
     if overlap:
         cog.memory.update_patch(overlap["id"],
-                                {"event": "内容合并", "note": f"与新建「{name}」重合"})
-        print(f"  [查重] 与补丁 {overlap['id']} 的 target 重合 → 合并进补丁")
+                                {"event": "merge", "note": f"overlap with new '{name}'"})
+        print(f"  [dedup] overlaps patch {overlap['id']}'s target "
+              f"→ merged into the patch")
         return
     eid = cog.learn_entry(name, desc, ai_proposed=name)
-    print(f"  [建条目] 专名「{name}」已入库：{eid}")
+    print(f"  [entry] proper name '{name}' stored: {eid}")
 
 
 def handle_recognized(act):
-    print(f"  [识别] 这是「{act['name']}」（记忆库命中，置信度 {act['confidence']}）")
+    print(f"  [recognized] this is '{act['name']}' "
+          f"(memory hit, confidence {act['confidence']})")
 
 
 def handle_arbitrate(act, cog, text):
-    print(f"  [灰色地带] 这和之前认识的「{act['candidate_name']}」有点像"
-          f"（相似度 {act['similarity']}），是同一个吗？")
-    ans = input("  主人（是/不是/是TA的幼体）> ").strip()
+    print(f"  [gray zone] this looks a bit like '{act['candidate_name']}' "
+          f"(similarity {act['similarity']}) — is it the same one?")
+    ans = input("  master (yes/no/it's the child of it) > ").strip().lower()
     eid = act["candidate_id"]
-    if ans == "是":
-        cog.merge_into(eid, text, note="灰色地带仲裁 MERGE")
-        print(f"  [MERGE] 已增补进 {eid}（只追加留痕）")
-    elif ans.startswith("是") and ans.endswith("幼体"):
-        name = input("  新条目叫什么名字？> ").strip()
-        new_id = cog.learn_entry(name, text, relation={"type": "subtype_of", "parent": eid})
-        print(f"  [SUBCLASS] 已建子类条目 {new_id}，挂在 {eid} 下")
+    if ans == "yes":
+        cog.merge_into(eid, text, note="gray-zone arbitration → MERGE")
+        print(f"  [MERGE] merged into {eid} (append-only)")
+    elif ans.startswith("yes") or ans.startswith("it's the child"):
+        name = input("  what is the new entry called? > ").strip()
+        new_id = cog.learn_entry(name, text,
+                                 relation={"type": "subtype_of", "parent": eid})
+        print(f"  [SUBCLASS] child entry {new_id} linked under {eid}")
     else:
-        name = input("  那它叫什么名字？> ").strip()
+        name = input("  then what is it called? > ").strip()
         finish_entry(cog, name, text)
-        print("  [NEW] 已按新条目入库")
+        print("  [NEW] stored as a new entry")
 
 
 def handle_guess(act, cog):
-    print(f"  [猜测] 这是不是{act['guess']}？（基础模型置信度 {act['confidence']}）")
-    if input("  主人（y/n）> ").strip().lower() != "y":
-        print("  [丢弃] 猜测被否定，流程结束（不入库）")
+    print(f"  [guess] is this a {act['guess']}? "
+          f"(base-model confidence {act['confidence']})")
+    if input("  master (y/n) > ").strip().lower() != "y":
+        print("  [dropped] guess rejected, nothing stored")
         return
-    # 闸口 1：GUESS 分支确认回环（设计文档 4.2）
-    ans = input(f"  这就是普通的{act['guess']}，对吗？还是有特别之处想让我记住的？\n"
-                f"  （输入「普通」丢弃 / 输入特征描述存补丁 / 输入「叫<名字>」建专名条目）> ").strip()
-    if ans in ("普通", "就是普通的", "对"):
-        print("  [丢弃] 常识不入库（防重复原则）")
-    elif ans.startswith("叫"):
-        name = ans[1:].strip()
-        desc = input(f"  请补充「{name}」的特征描述> ").strip()
-        finish_entry(cog, name, f"{name}，{desc}")
+    # Gate 1: confirmation loop on the GUESS branch (design doc 4.2)
+    ans = input(f"  so it's just an ordinary {act['guess']}, right? "
+                f"or is there something special to remember?\n"
+                f"  (type 'ordinary' to drop / a feature to save a patch / "
+                f"'named <X>' for a proper-name entry) > ").strip()
+    if ans.lower() in ("ordinary", "just ordinary", "yes"):
+        print("  [dropped] common knowledge is never stored (anti-duplication)")
+    elif ans.lower().startswith("named "):
+        name = ans[6:].strip()
+        desc = input(f"  please describe '{name}' > ").strip()
+        finish_entry(cog, name, f"{name}, {desc}")
     else:
-        pid = cog.learn_patch(act["guess"], {"特征": ans}, patch_type="feature_addition")
-        print(f"  [补丁] 已存增量补丁 {pid} → target={act['guess']}（基础模型已知，只补粒度）")
+        pid = cog.learn_patch(act["guess"], {"feature": ans},
+                              patch_type="feature_addition")
+        print(f"  [patch] incremental patch {pid} → target={act['guess']} "
+              f"(base model knows the concept, we only add granularity)")
 
 
 def naming_flow(cog):
-    """UNKNOWN 分支：承认未知 → 多维度分析 → 共同命名 → 闸口 2/3。"""
-    desc = input("  请主人告诉我它是什么（名字 + 特征描述）> ").strip()
-    name = re.split(r"[，,]", desc)[0].strip()
+    """UNKNOWN branch: admit unknown → analyze → name together → gates 2/3."""
+    desc = input("  master, please tell me what it is (name + features) > ").strip()
+    name = re.split(r"[,，]", desc)[0].strip()
     finish_entry(cog, name, desc)
 
 
 def record_mistake(cog, arg):
-    """命令：错误 <条目ID> <错认为> [新特征]"""
+    """Command: mistake <entry_id> <mistook_as> [new_feature]
+    （也支持中文命令：错误 <条目ID> <错认为> [新特征]）"""
     parts = arg.split()
     if len(parts) < 2:
-        print("  用法：错误 <条目ID> <错认为> [新特征]")
+        print("  usage: mistake <entry_id> <mistook_as> [new_feature]")
         return
     eid, mistook_as = parts[0], parts[1]
-    new_features = {"补充特征": parts[2]} if len(parts) > 2 else None
+    new_features = {"added_feature": parts[2]} if len(parts) > 2 else None
     if eid not in cog.memory.entries:
-        print(f"  [记错] 找不到条目 {eid}")
+        print(f"  [mistake] no such entry: {eid}")
         return
     cog.record_mistake(eid, mistook_as, new_features)
-    print(f"  [记错] {eid} 的错误事件已单独成档（只追加不覆盖）")
+    print(f"  [mistake] recorded for {eid} (append-only, nothing overwritten)")
 
 
 def print_stats(cog):
     s = cog.memory.stats()
-    print(f"  [统计] 主条目 {s['entries']} 条，补丁 {s['patches']} 条"
-          f"（生效中 {s['patches_active']}）")
+    print(f"  [stats] {s['entries']} entries, {s['patches']} patches "
+          f"({s['patches_active']} active)")
     for eid, e in cog.memory.entries.items():
         h, meta = e.get("health", {}), e.get("threshold_meta", {})
-        print(f"    {eid} 「{e['name']}」 命中{h.get('hit_count', 0)}次 "
-              f"错误{meta.get('mistake_count', 0)}次 更新{len(e.get('updates', []))}条")
+        print(f"    {eid} '{e['name']}' hits={h.get('hit_count', 0)} "
+              f"errors={meta.get('mistake_count', 0)} updates={len(e.get('updates', []))}")
     for p in cog.memory.patches:
         print(f"    {p['id']} → target={p['target']} [{p['type']}] "
-              f"status={p['status']} 内容={p['content']}")
+              f"status={p['status']} content={p['content']}")
 
 
 def main():
-    print("=" * 56)
-    print(" 自认知外挂 · primitive version —— 你扮演主人，按提示交互")
-    print(" 命令：错误 <条目ID> <错认为> [新特征] | stats | 退出")
-    print("=" * 56)
+    print("=" * 60)
+    print(" cognition-exoskeleton · primitive version")
+    print(" you are the MASTER (主人) — type descriptions, or commands:")
+    print(" mistake <id> <wrong_as> [feature] | 错误 <ID> <错认为> [特征]")
+    print(" stats | exit / 退出")
+    print("=" * 60)
     embedder = HashingEmbedder()
     memory = MemoryModule("memory.json", embedder)
     cog = CognitiveModule(DemoBaseModel(embedder), memory, embedder)
 
     while True:
         try:
-            text = input("\n主人 > ").strip()
+            text = input("\nmaster > ").strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not text:
             continue
-        if text in ("退出", "exit", "quit"):
+        if text.lower() in EXIT_CMDS:
             break
-        if text.startswith("错误 "):
-            record_mistake(cog, text[3:])
+        low = text.lower()
+        if any(low.startswith(p) for p in MISTAKE_PREFIXES):
+            arg = text.split(" ", 1)[1] if " " in text else ""
+            record_mistake(cog, arg)
             continue
-        if text == "stats":
+        if low in STATS_CMDS:
             print_stats(cog)
             continue
 
@@ -184,10 +212,10 @@ def main():
         elif act["action"] == "GUESS":
             handle_guess(act, cog)
         else:
-            print("  [未知] 我承认无法识别这个目标。")
+            print("  [unknown] I admit I cannot recognize this.")
             naming_flow(cog)
 
-    print("\n会话结束，记忆已持久化到 memory.json")
+    print("\nsession ended, memory persisted to memory.json")
 
 
 if __name__ == "__main__":

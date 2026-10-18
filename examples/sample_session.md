@@ -1,56 +1,56 @@
-# 示例会话
+# Sample Session
 
-`python demo.py` 的实际运行记录（ primitive version，内置模拟基础模型认识"猫/狗/汽车"三个常识概念）。
+Recorded run of `python demo.py` (primitive version; the simulated base model knows three common concepts: cat / dog / car).
 
-## 会话 1：完整闭环
+## Session: the full loop
 
 ```
-主人 > 一只橘色的胖猫
-  [猜测] 这是不是猫？（基础模型置信度 0.84）
-  主人（y/n）> y
-  这就是普通的猫，对吗？还是有特别之处想让我记住的？
-  （输入「普通」丢弃 / 输入特征描述存补丁 / 输入「叫<名字>」建专名条目）> 尾巴是弯钩形的
-  [补丁] 已存增量补丁 P-0001 → target=猫（基础模型已知，只补粒度）
+master > an orange fat cat
+  [guess] is this a cat? (base-model confidence 0.84)
+  master (y/n) > y
+  so it's just an ordinary cat, right? or is there something special to remember?
+  (type 'ordinary' to drop / a feature to save a patch / 'named <X>' for a proper-name entry) > hook-shaped tail
+  [patch] incremental patch P-0001 → target=cat (base model knows the concept, we only add granularity)
 
-主人 > 豆豆，我家那只橘色弯钩尾巴的猫
-  [猜测] 这是不是猫？（基础模型置信度 0.95）
-  主人（y/n）> y
-  这就是普通的猫，对吗？还是有特别之处想让我记住的？
-  （输入「普通」丢弃 / 输入特征描述存补丁 / 输入「叫<名字>」建专名条目）> 叫豆豆
-  请补充「豆豆」的特征描述> 我家那只橘色弯钩尾巴的猫
-  [建条目] 专名「豆豆」已入库：M-0001
+master > an orange cat with a hook-shaped tail
+  [guess] is this a cat? (base-model confidence 0.95)
+  master (y/n) > y
+  so it's just an ordinary cat, right? or is there something special to remember? > named Doudou
+  please describe 'Doudou' > my orange cat with a hook-shaped tail
+  [entry] proper name 'Doudou' stored: M-0001
 
-主人 > 橘色弯钩尾巴的猫
-  [识别] 这是「豆豆」（记忆库命中，置信度 0.7192）
+master > orange hook-shaped tail cat
+  [recognized] this is 'Doudou' (memory hit, confidence 0.843)
 
-主人 > 弯钩尾巴的橘色猫
-  [灰色地带] 这和之前认识的「豆豆」有点像（相似度 0.6233），是同一个吗？
-  主人（是/不是/是TA的幼体）> 是
-  [MERGE] 已增补进 M-0001（只追加留痕）
+master > orange cat
+  [gray zone] this looks a bit like 'Doudou' (similarity 0.6185) — is it the same one?
+  master (yes/no/it's the child of it) > yes
+  [MERGE] merged into M-0001 (append-only)
 
-主人 > 错误 M-0001 狐狸 左耳有缺角
-  [记错] M-0001 的错误事件已单独成档（只追加不覆盖）
+master > mistake M-0001 fox notched-ear
+  [mistake] recorded for M-0001 (append-only, nothing overwritten)
 
-主人 > stats
-  [统计] 主条目 1 条，补丁 1 条（生效中 1）
-    M-0001 「豆豆」 命中1次 错误1次 更新2条
-    P-0001 → target=猫 [feature_addition] status=active 内容={'特征': '尾巴是弯钩形的'}
+master > stats
+  [stats] 1 entries, 1 patches (1 active)
+    M-0001 'Doudou' hits=1 errors=1 updates=2
+    P-0001 → target=cat [feature_addition] status=active content={'feature': 'hook-shaped tail'}
 ```
 
-## 这个会话演示了什么
+## What each step demonstrates
 
-| 步骤 | 设计文档机制 |
+| Step | Design doc mechanism |
 |---|---|
-| 第 1 轮：猜测 → 存补丁 | 51% 猜测分支 + 闸口 1 回环提问；基础模型已知"猫"，只补"弯钩尾巴"粒度（4.1 例外 1、4.2 闸口 1） |
-| 第 2 轮：专名建条目 | 闸口 2：`is_common_knowledge("豆豆")` = False → 闸口 3 查重通过 → 建主条目（4.2） |
-| 第 3 轮：直接认出 | 记忆库 ≥70% 确认命中（2.1） |
-| 第 4 轮：灰色地带 | 51%~70% 不自动下结论，主人仲裁 MERGE / NEW / SUBCLASS（2.1、v2.0 修订） |
-| 第 5 轮：错误成档 | 错误事件单独入 updates，不覆盖旧特征（5.2 原则 2） |
-| stats | 全部状态只追加留痕，演化轨迹可查 |
+| Round 1: guess → patch | 51% guess branch + Gate 1 confirmation loop; base model already knows "cat", so only the "hook-shaped tail" granularity is patched (§4.1 exception 1, §4.2 Gate 1) 基础模型已知概念只补粒度 |
+| Round 2: proper-name entry | Gate 2: `is_common_knowledge("Doudou")` = False → Gate 3 dedup passes → main entry (§4.2) 专名建条目 |
+| Round 3: instant recognition | memory hit ≥70% (§2.1) |
+| Round 4: gray zone | 51%~70% never auto-decides; master arbitrates MERGE / NEW / SUBCLASS (§2.1, v2.0 revision) 灰色地带主人仲裁 |
+| Round 5: mistake filed | mistakes go to `updates` separately, old features untouched (§5.2 principle 2) 错误单独成档 |
+| stats | everything append-only, full evolution trail inspectable 只追加留痕 |
 
-## 其他可尝试的输入
+## More things to try
 
-- `一只猫` → 猜测"猫"→ 回答"普通" → 丢弃不入库（防重复原则）
-- `一辆红色的小汽车` → 猜测"汽车" → 回答"普通" → 丢弃
-- `咪咪，橘色的小猫` → 基础模型不认识"咪咪"→ 命名流程建专名条目
-- `橘色的小猫`（已有"豆豆"条目后）→ 灰色地带仲裁；回答"是TA的幼体" → 建子类条目挂父子链接
+- `a cat` → guess "cat" → answer "ordinary" → dropped, nothing stored (anti-duplication 防重复)
+- `a red car` → guess "car" → "ordinary" → dropped
+- `Mimi, a small orange cat` → base model doesn't know "Mimi" → naming flow → proper-name entry
+- `orange cat` (after a "Doudou" entry exists) → gray-zone arbitration; answer "it's the child of it" → child entry linked to the parent 子类条目挂父子链接
+- Commands also accept Chinese: `错误 M-0001 狐狸 缺角` works the same as `mistake` 中英文命令等效

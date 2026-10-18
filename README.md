@@ -51,9 +51,9 @@ python demo.py
 | Input | Effect |
 |---|---|
 | any descriptive text | recognition flow (recognize / arbitrate / guess / unknown) |
-| `错误 <entry_id> <mistook_as> [new_feature]` | record a recognition mistake (append-only) |
-| `stats` | memory store statistics |
-| `退出` / `exit` / `quit` | end session |
+| `mistake <entry_id> <mistook_as> [new_feature]`（中文等效：`错误 <ID> <错认为> [特征]`） | record a recognition mistake (append-only) |
+| `stats`（`统计`） | memory store statistics |
+| `exit` / `quit`（`退出`） | end session |
 
 ## Example
 
