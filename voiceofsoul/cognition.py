@@ -30,24 +30,63 @@ class CognitiveModule:
 
     # ---------- 识别 ----------
     def perceive(self, text: str) -> dict:
+        """识别流程（基础模型先认知，外挂只做它做不了的）。
+
+        1. 记忆库高阈值精确命中（≥mem_th，稀少、明确）→ RECOGNIZED
+        2. 基础模型先判断：它认识这个事物吗？
+           - 它认识的类别下，主人恰好给某一事物起过专名 → RECOGNIZED（专名命中）
+           - 它认识、且与任何专名无关 → DIRECT（常识直通，不问主人）
+           - 它认识的类别下有多个专名候选 → GUESS（请主人确认，闸口 1）
+        3. 基础模型也不确定 → 向量近邻 + 基础模型同一性裁决（不再事事问主人）
+        4. 都不成立 → UNKNOWN，进入命名教学流程
+        """
+        # 1. 记忆库精确命中
         hits = self.memory.search(text, threshold=self.mem_th)
         if hits:
             eid, score = hits[0]
             self.memory.touch(eid)
             return {"action": "RECOGNIZED", "entry_id": eid, "confidence": score,
-                    "name": self.memory.entries[eid]["name"]}
+                    "name": self.memory.entries[eid]["name"], "via": "memory"}
 
-        best = self.memory.best_match(text)
-        if best and best[1] >= self.base_th:  # 51%~70% 灰色地带
-            eid, score = best
-            return {"action": "ARBITRATE", "candidate_id": eid, "candidate_name":
-                    self.memory.entries[eid]["name"], "similarity": score}
-
+        # 2. 基础模型先认知
         conf = self.base.infer_confidence(text)
-        if conf > self.base_th:
-            return {"action": "GUESS", "guess": self.base.infer(text),
-                    "confidence": round(conf, 4)}
+        guess = self.base.infer(text) if conf > 0.3 else None
+        if guess and conf >= self.base_th:
+            related = [eid for eid, e in self.memory.entries.items()
+                       if guess in e.get("features", {}).get("描述", "")]
+            if len(related) == 1:  # 类别唯一专名 → 同一性裁决确认后认出
+                eid = related[0]
+                desc = self.memory.entries[eid]["features"].get("描述", "")
+                judge = getattr(self.base, "judge_same", lambda a, b: None)(text, desc)
+                if judge is True:
+                    self.memory.touch(eid)
+                    return {"action": "RECOGNIZED", "entry_id": eid,
+                            "confidence": round(conf, 4),
+                            "name": self.memory.entries[eid]["name"],
+                            "via": "base+memory"}
+                if judge is False:
+                    pass  # 同类不同物 → 落入下方未知/命名流程
+                else:
+                    return {"action": "GUESS", "guess": guess,
+                            "confidence": round(conf, 4)}
+            elif len(related) > 1:  # 多个专名候选 → 请主人确认（闸口 1 前置）
+                return {"action": "GUESS", "guess": guess, "confidence": round(conf, 4)}
+            else:
+                return {"action": "DIRECT", "guess": guess,
+                        "confidence": round(conf, 4)}
 
+        # 3. 基础模型不确定：近邻 + 同一性裁决（替代灰色地带事事仲裁）
+        best = self.memory.best_match(text)
+        if best and best[1] >= 0.5:
+            eid, score = best
+            desc = self.memory.entries[eid]["features"].get("描述", "")
+            judge = getattr(self.base, "judge_same", lambda a, b: None)(text, desc)
+            if judge is True:
+                self.memory.touch(eid)
+                return {"action": "RECOGNIZED", "entry_id": eid, "confidence": score,
+                        "name": self.memory.entries[eid]["name"], "via": "judge"}
+
+        # 4. 未知 → 命名教学流程
         return {"action": "UNKNOWN"}
 
     # ---------- 闸口 2：专名/通名自检 ----------

@@ -54,6 +54,7 @@ def make_handlers(cog: CognitiveModule):
         return {"say": text, "actions": actions or [], "debug": debug}
 
     def chat(text: str, image_b64: str | None = None) -> dict:
+        STATE["pending"] = None  # 主人发来新输入，未决裁决自动取消
         # 常识问答直通：纯问题不进识别/记忆流程，基础模型能答就直接答
         # （设计文档 4.1 主规则：能被基础模型完整覆盖 → 不建条目）
         if not image_b64 and QA_PATTERN.search(text):
@@ -70,7 +71,14 @@ def make_handlers(cog: CognitiveModule):
         act = cog.perceive(text)
         kind = act["action"]
         if kind == "RECOGNIZED":
-            return say(f"我认出来了——这是「{act['name']}」✓（记忆库命中，置信度 {act['confidence']}）",
+            via = {"memory": "记忆库命中", "base+memory": "基础模型认知+专名匹配",
+                   "judge": "同一性裁决"}.get(act.get("via", ""), "")
+            return say(f"我认出来了——这是「{act['name']}」✓（{via}，置信度 {act['confidence']}）",
+                       debug=f"action={kind}")
+        if kind == "DIRECT":
+            return say(f"【基础模型判断】这是{act['guess']}（置信度 {act['confidence']}），"
+                       f"属于我的常识范围。如果它是你想让我记住的专名事物，"
+                       f"告诉我它的名字和特征，我会建立记忆。",
                        debug=f"action={kind}")
         if kind == "ARBITRATE":
             STATE["pending"] = {"kind": "arbitrate", "text": text,

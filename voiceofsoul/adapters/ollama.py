@@ -127,6 +127,26 @@ class OllamaBaseModel:
             return None
         return ans
 
+    def judge_same(self, desc_a: str, desc_b: str) -> bool | None:
+        """同一性裁决：两段描述是否指向同一事物。
+
+        用于替代"灰色地带事事问主人"——向量相似度噪声大，由基础模型做最终裁决。
+        返回 True/False；模型拿不准或调用失败返回 None（交由上层走未知流程）。
+        """
+        prompt = (
+            "以下两段描述是否最可能指向同一个具体事物？只输出「是」或「否」。\n"
+            f"描述一：{desc_a}\n描述二：{desc_b}"
+        )
+        try:
+            ans = self._generate(prompt)
+        except OSError:
+            return None
+        if "否" in ans:
+            return False
+        if "是" in ans:
+            return True
+        return None
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         """感知通道 A（设计文档 3.1）：图像 → 视觉模型 → 统一结构化描述。
 
