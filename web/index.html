@@ -32,6 +32,12 @@
   #preview { max-width: 820px; margin: 0 auto; width: 100%; }
   #preview img { max-height: 70px; border-radius: 8px; border: 1px solid #e5e1da; margin: 6px 0 0 20px; }
   #preview .x { margin-left: 8px; cursor: pointer; color: #a39e94; font-size: 13px; }
+  #model-bar { background: #faf9f7; border-top: 1px solid #e5e1da; padding: 8px 20px; }
+  #model-inner { max-width: 820px; margin: 0 auto; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  #model-inner label { font-size: 12px; color: #6b6660; display: flex; align-items: center; gap: 6px; }
+  #model-inner select { font-size: 12px; padding: 4px 8px; border: 1px solid #d8d3ca; border-radius: 10px; background: #fff; max-width: 220px; }
+  #model-inner select:disabled { opacity: .5; }
+  #model-status { font-size: 12px; color: #a39e94; margin-left: auto; }
   .tag { font-size: 11px; color: #a39e94; margin-bottom: 4px; }
 </style>
 </head>
@@ -48,6 +54,13 @@
     <input type="file" id="file" accept="image/*" hidden>
     <input id="text" placeholder="描述一个事物，或配上图片问我看到了什么…" autofocus>
     <button id="send">发送</button>
+  </div>
+</div>
+<div id="model-bar">
+  <div id="model-inner">
+    <label>基础模型 <select id="sel-base"><option>加载中…</option></select></label>
+    <label>embedding 模型 <select id="sel-emb"><option>加载中…</option></select></label>
+    <span id="model-status"></span>
   </div>
 </div>
 <script>
@@ -139,6 +152,62 @@ function submit() {
 
 sendBtn.onclick = submit;
 input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+
+// ---------------- 模型选择 ----------------
+const selBase = document.getElementById('sel-base');
+const selEmb = document.getElementById('sel-emb');
+const modelStatus = document.getElementById('model-status');
+let modelsLoaded = false;
+
+function fillSelect(sel, names, current) {
+  sel.innerHTML = '';
+  names.forEach(n => {
+    const o = document.createElement('option');
+    o.value = o.textContent = n;
+    if (n === current) o.selected = true;
+    sel.appendChild(o);
+  });
+  if (!names.includes(current)) {
+    const o = document.createElement('option');
+    o.value = o.textContent = current + '（当前）';
+    o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+async function loadModels() {
+  try {
+    const d = await (await fetch('/api/models')).json();
+    fillSelect(selBase, d.base || [], d.current?.base);
+    fillSelect(selEmb, d.embedding || [], d.current?.embedding);
+    modelStatus.textContent = '模型列表来自本地 Ollama';
+    modelsLoaded = true;
+  } catch (e) {
+    modelStatus.textContent = '模型列表加载失败（服务未启动？）';
+  }
+}
+
+async function switchModel(kind, value) {
+  if (!modelsLoaded) return;
+  selBase.disabled = selEmb.disabled = true;
+  modelStatus.textContent = '切换中…（冷启动模型可能需要 1~2 分钟）';
+  try {
+    const body = kind === 'base' ? {base: value} : {embedding: value};
+    const d = await (await fetch('/api/switch', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})).json();
+    modelStatus.textContent = d.ok ? ('✓ ' + d.msg) : ('✗ ' + d.msg);
+    if (d.ok) addMsg('soul', '【模型切换】' + d.msg);
+  } catch (e) {
+    modelStatus.textContent = '✗ 切换请求失败';
+  } finally {
+    selBase.disabled = selEmb.disabled = false;
+  }
+}
+
+selBase.onchange = () => switchModel('base', selBase.value);
+selEmb.onchange = () => switchModel('embedding', selEmb.value);
+loadModels();
+
 addMsg('soul', '主人你好。向我描述任何事物，或直接发图片问我看到了什么：我认识的会直接回答，不确定的会问你，完全不认识的就请你教我。教过的东西我会记住并随时纠错。');
 </script>
 </body>

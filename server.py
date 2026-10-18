@@ -12,6 +12,7 @@
 import argparse
 import json
 import re
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -25,7 +26,7 @@ QA_PATTERN = re.compile(r"(是什么|什么是|为什么|怎么|如何|哪里|�
 
 # ------------------------------------------------------------------ 全局状态
 # 单主人原则：一个服务实例只服务一个主人，会话状态即全局状态。
-STATE = {"pending": None}  # 待主人裁决的状态机
+STATE = {"pending": None, "base_model": "", "embedding_model": ""}
 
 
 def make_handlers(cog: CognitiveModule):
@@ -177,7 +178,7 @@ def make_handlers(cog: CognitiveModule):
 # ------------------------------------------------------------------ HTTP 层
 
 class Handler(BaseHTTPRequestHandler):
-    chat = respond = stats_fn = None  # 由 main 注入
+    chat = respond = stats_fn = models_fn = switch_fn = None  # 由 main 注入
 
     def log_message(self, *args):  # 静默日志
         pass
@@ -209,6 +210,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == "/api/stats":
             self._json(self.stats_fn())
+        elif self.path == "/api/models":
+            self._json(self.models_fn())
         else:
             self._json({"error": "not found"}, 404)
 
@@ -232,8 +235,68 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.chat(text, image or None))
         elif self.path == "/api/respond":
             self._json(self.respond((payload.get("value") or "").strip()))
+        elif self.path == "/api/switch":
+            self._json(self.switch_fn(payload))
         else:
             self._json({"error": "not found"}, 404)
+
+
+# ------------------------------------------------------------------ 模型管理
+# Ollama /api/tags 只给名单，模型分类要靠 /api/show 的 capabilities 字段：
+# 含 "embedding" → embedding 模型；含 "completion" → 基础模型。结果缓存。
+_MODEL_CACHE: dict[str, list] = {}
+
+
+def _get_json(host: str, path: str, timeout: float = 30.0) -> dict:
+    with urllib.request.urlopen(host.rstrip("/") + path, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def list_models(host: str) -> dict:
+    bases, embeds = [], []
+    for m in _get_json(host, "/api/tags").get("models", []):
+        name = m["name"]
+        caps = _MODEL_CACHE.get(name)
+        if caps is None:
+            try:
+                req = urllib.request.Request(
+                    host.rstrip("/") + "/api/show",
+                    data=json.dumps({"name": name}).encode(),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    caps = json.loads(r.read().decode()).get("capabilities", [])
+            except OSError:
+                caps = []
+            _MODEL_CACHE[name] = caps
+        if "embedding" in caps:
+            embeds.append(name)
+        elif "completion" in caps:
+            bases.append(name)
+    return {"base": sorted(bases), "embedding": sorted(embeds)}
+
+
+def switch_models(cog, host: str, base: str | None, embedding: str | None) -> str:
+    """运行时热切换模型。切换 embedding 时按设计文档 3.3 重建全部记忆向量。"""
+    msgs = []
+    if base:
+        cog.base = OllamaBaseModel(model=base, host=host)
+        STATE["base_model"] = base
+        msgs.append(f"基础模型 → {base}")
+    if embedding:
+        new_emb = OllamaEmbedder(model=embedding, host=host)
+        cog.embedder = new_emb
+        cog.memory.embedder = new_emb
+        STATE["embedding_model"] = embedding
+        n = 0
+        for e in cog.memory.entries.values():
+            desc = e.get("features", {}).get("描述")
+            if desc:
+                e["features"]["embedding"] = new_emb.embed(desc)
+                e.setdefault("embedding_meta", {})["model"] = new_emb.model_tag
+                n += 1
+        cog.memory._persist()
+        msgs.append(f"embedding 模型 → {embedding}（已重建 {n} 条记忆向量）")
+    return "；".join(msgs) if msgs else "模型未变化"
 
 
 def main():
@@ -254,10 +317,30 @@ def main():
     memory = MemoryModule(args.memory, embedder)
     cog = CognitiveModule(base, memory, embedder,
                           base_th=args.base_th, mem_th=args.mem_th)
+    STATE["base_model"], STATE["embedding_model"] = args.base_model, args.embedding_model
 
     Handler.chat, Handler.respond, Handler.stats_fn = (
         staticmethod(f) for f in make_handlers(cog))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+
+    # 模型列表与热切换（挂在 Handler 类上，保持与 chat/respond 同一注入方式）
+    def models_handler():
+        d = list_models(args.ollama)
+        d["current"] = {"base": STATE["base_model"],
+                        "embedding": STATE["embedding_model"]}
+        return d
+
+    def switch_handler(payload: dict):
+        base = (payload.get("base") or "").strip() or None
+        emb = (payload.get("embedding") or "").strip() or None
+        try:
+            msg = switch_models(cog, args.ollama, base, emb)
+            return {"ok": True, "msg": msg}
+        except OSError as e:
+            return {"ok": False, "msg": f"切换失败：{e}"}
+
+    Handler.models_fn = staticmethod(models_handler)
+    Handler.switch_fn = staticmethod(switch_handler)
     print(f"自认知外挂测试服务已启动： http://localhost:{args.port}")
     print(f"  基础模型: {args.base_model} | 编码器: {args.embedding_model}")
     print("按 Ctrl+C 停止")
