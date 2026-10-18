@@ -17,15 +17,21 @@
   .msg.master .bubble { background: #1f1d1a; color: #f4f2ef; border-bottom-right-radius: 4px; }
   .msg.soul .bubble { background: #fff; border: 1px solid #e5e1da; border-bottom-left-radius: 4px; }
   .msg.soul .debug { display: block; margin-top: 6px; font-size: 11px; color: #a39e94; }
+  .msg.master .bubble img { max-width: 200px; border-radius: 8px; display: block; margin-bottom: 4px; }
   .actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   .actions button { border: 1px solid #1f1d1a; background: #fff; padding: 6px 14px; border-radius: 16px; cursor: pointer; font-size: 13px; }
   .actions button:hover { background: #1f1d1a; color: #fff; }
   #input-bar { border-top: 1px solid #e5e1da; background: #fff; padding: 12px 20px; }
-  #input-inner { max-width: 820px; margin: 0 auto; display: flex; gap: 10px; }
+  #input-inner { max-width: 820px; margin: 0 auto; display: flex; gap: 10px; align-items: center; }
   #text { flex: 1; padding: 10px 14px; border: 1px solid #d8d3ca; border-radius: 20px; font-size: 14px; outline: none; }
   #text:focus { border-color: #1f1d1a; }
-  #send { background: #1f1d1a; color: #fff; border: none; padding: 0 22px; border-radius: 20px; cursor: pointer; font-size: 14px; }
+  #send { background: #1f1d1a; color: #fff; border: none; padding: 10px 22px; border-radius: 20px; cursor: pointer; font-size: 14px; }
   #send:disabled { opacity: .4; cursor: default; }
+  #attach { background: #fff; border: 1px solid #d8d3ca; border-radius: 50%; width: 38px; height: 38px; cursor: pointer; font-size: 17px; line-height: 1; flex-shrink: 0; }
+  #attach:hover { border-color: #1f1d1a; }
+  #preview { max-width: 820px; margin: 0 auto; width: 100%; }
+  #preview img { max-height: 70px; border-radius: 8px; border: 1px solid #e5e1da; margin: 6px 0 0 20px; }
+  #preview .x { margin-left: 8px; cursor: pointer; color: #a39e94; font-size: 13px; }
   .tag { font-size: 11px; color: #a39e94; margin-bottom: 4px; }
 </style>
 </head>
@@ -35,9 +41,12 @@
   <span class="sub" id="pending-hint"></span>
 </header>
 <div id="chat"></div>
+<div id="preview"></div>
 <div id="input-bar">
   <div id="input-inner">
-    <input id="text" placeholder="向你的外挂描述一个事物，或回答它的提问…" autofocus>
+    <button id="attach" title="上传图片（也可直接粘贴截图）">📷</button>
+    <input type="file" id="file" accept="image/*" hidden>
+    <input id="text" placeholder="描述一个事物，或配上图片问我看到了什么…" autofocus>
     <button id="send">发送</button>
   </div>
 </div>
@@ -45,13 +54,18 @@
 const chat = document.getElementById('chat');
 const input = document.getElementById('text');
 const sendBtn = document.getElementById('send');
+const attachBtn = document.getElementById('attach');
+const fileInput = document.getElementById('file');
+const preview = document.getElementById('preview');
 let pending = false;
+let stagedImage = null;  // data URL，待发
 
-function addMsg(role, text, debug) {
+function addMsg(role, text, debug, image) {
   const div = document.createElement('div');
   div.className = 'msg ' + role;
   const tag = role === 'master' ? '' : '<span class="tag">外挂</span>';
-  div.innerHTML = `<div class="bubble">${tag}${escapeHtml(text)}` +
+  const img = image ? `<img src="${image}">` : '';
+  div.innerHTML = `<div class="bubble">${tag}${img}${escapeHtml(text)}` +
     (debug ? `<span class="debug">${escapeHtml(debug)}</span>` : '') + `</div>`;
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
@@ -61,6 +75,23 @@ function addMsg(role, text, debug) {
 function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+
+function stageImage(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    stagedImage = reader.result;
+    preview.innerHTML = `<img src="${stagedImage}"><span class="x" id="rm-img">✕ 移除图片</span>`;
+    document.getElementById('rm-img').onclick = () => { stagedImage = null; preview.innerHTML = ''; };
+  };
+  reader.readAsDataURL(file);
+}
+
+attachBtn.onclick = () => fileInput.click();
+fileInput.onchange = () => { if (fileInput.files[0]) stageImage(fileInput.files[0]); };
+document.addEventListener('paste', e => {
+  const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+  if (item) stageImage(item.getAsFile());
+});
 
 function renderActions(bubble, actions) {
   if (!actions || !actions.length) return;
@@ -82,12 +113,12 @@ async function post(url, body, isResponse) {
                                 body: JSON.stringify(body)});
     const d = await r.json();
     if (isResponse) pending = false;
-    else { addMsg('master', body.text); pending = true; }
+    else { addMsg('master', body.text, '', body.image); pending = true; stagedImage = null; preview.innerHTML = ''; }
     const bubble = addMsg('soul', d.say || '', d.debug || '');
     renderActions(bubble, d.actions);
     document.getElementById('pending-hint').textContent = d.actions && d.actions.length ? '等待主人裁决…' : '';
   } catch (e) {
-    addMsg('soul', '⚠️ 服务无响应：请确认 server.py 正在运行、Ollama 已启动。');
+    addMsg('soul', '⚠️ 服务无响应：请确认 server.py 正在运行、Ollama 已启动，并通过 http://localhost:8600 访问本页。');
   } finally {
     sendBtn.disabled = false;
     input.focus();
@@ -96,16 +127,15 @@ async function post(url, body, isResponse) {
 
 function submit() {
   const t = input.value.trim();
-  if (!t) return;
+  if (!t && !stagedImage) return;
   input.value = '';
   if (pending) post('/api/respond', {value: t}, true);
-  else post('/api/chat', {text: t}, false);
+  else post('/api/chat', {text: t, image: stagedImage}, false);
 }
 
 sendBtn.onclick = submit;
 input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
-addMsg('soul', '主人你好。向我描述任何事物：我认识的会直接回答，不确定的会问你，\
-完全不认识的就请你教我。教过的东西我会记住并随时纠错。');
+addMsg('soul', '主人你好。向我描述任何事物，或直接发图片问我看到了什么：我认识的会直接回答，不确定的会问你，完全不认识的就请你教我。教过的东西我会记住并随时纠错。');
 </script>
 </body>
 </html>

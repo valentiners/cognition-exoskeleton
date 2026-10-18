@@ -108,3 +108,28 @@ class OllamaBaseModel:
         if any(k in ans for k in ("不认识", "无法", "不知道", "不确定")) or not ans:
             return None
         return ans
+
+    def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
+        """感知通道 A（设计文档 3.1）：图像 → 视觉模型 → 统一结构化描述。
+
+        输出的是"描述文字"，后续比对/命名/存库流程与文本输入完全同路。
+        """
+        prompt = (
+            "请观察图片，用一段简洁的中文文字描述图中的主体事物，"
+            "涵盖颜色、外形、大小、类型等可辨认的特征。"
+        )
+        if hint:
+            prompt += f"\n主人的补充说明：{hint}"
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "images": [image_b64],
+            "stream": False,
+            "think": self.think,
+            "options": {"temperature": 0.2},
+        }
+        try:
+            return _post(self.host, "/api/generate", payload,
+                         timeout=300).get("response") or None
+        except (OSError, KeyError):
+            return None

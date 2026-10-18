@@ -50,7 +50,13 @@ def make_handlers(cog: CognitiveModule):
     def say(text: str, actions=None, debug: str = "") -> dict:
         return {"say": text, "actions": actions or [], "debug": debug}
 
-    def chat(text: str) -> dict:
+    def chat(text: str, image_b64: str | None = None) -> dict:
+        # 感知通道 A：图像先经视觉模型转为统一描述，再走同一条比对流程
+        if image_b64:
+            desc = cog.base.perceive_image(image_b64, text)
+            if not desc:
+                return say("⚠️ 视觉模型未能从图片中提取描述，请换一张图或改用文字描述。")
+            text = f"{text}，{desc}" if text else desc
         act = cog.perceive(text)
         kind = act["action"]
         if kind == "RECOGNIZED":
@@ -167,22 +173,30 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # 静默日志
         pass
 
+    def _headers(self, code: int, length: int, content_type: str):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Access-Control-Allow-Origin", "*")  # 允许直接双击打开页面
+        self.end_headers()
+
     def _json(self, payload: dict, code: int = 200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
+        self._headers(code, len(body), "application/json; charset=utf-8")
         self.wfile.write(body)
+
+    def do_OPTIONS(self):  # CORS 预检
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
             body = html.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
+            self._headers(200, len(body), "text/html; charset=utf-8")
             self.wfile.write(body)
         elif self.path == "/api/stats":
             self._json(self.stats_fn())
@@ -197,12 +211,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "bad request"}, 400)
         if self.path == "/api/chat":
             text = (payload.get("text") or "").strip()
-            if not text:
-                return self._json({"error": "empty text"}, 400)
+            image = (payload.get("image") or "").strip()
+            # data URL → 纯 base64
+            if image.startswith("data:"):
+                image = image.split(",", 1)[1] if "," in image else ""
+            if not text and not image:
+                return self._json({"error": "empty input"}, 400)
             if text in EXIT_VALUES:
                 return self._json({"say": "会话不退出（服务常驻），直接继续描述新事物即可。",
                                    "actions": [], "debug": ""})
-            self._json(self.chat(text))
+            self._json(self.chat(text, image or None))
         elif self.path == "/api/respond":
             self._json(self.respond((payload.get("value") or "").strip()))
         else:
