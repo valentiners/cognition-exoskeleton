@@ -36,7 +36,7 @@ def make_handlers(cog: CognitiveModule, temp):
     temp：临时记忆（七天法则）——新特征先暂存，主人要求或七天三次才晋升永久。
     """
 
-    def finish_entry(name: str, desc: str) -> str:
+    def finish_entry(name: str, desc: str, modality: str = "text") -> str:
         """闸口 2（公共/私人自检）+ 闸口 3（建库前去重）。"""
         if cog.is_common_knowledge(name, desc):
             pid = cog.learn_patch(name, {"描述": desc}, patch_type="feature_addition")
@@ -51,7 +51,7 @@ def make_handlers(cog: CognitiveModule, temp):
             cog.memory.update_patch(overlap["id"],
                                     {"event": "内容合并", "note": f"与新建「{name}」重合"})
             return "和已有的补丁重合了，我把它合过去了～"
-        cog.learn_entry(name, desc, ai_proposed=name)
+        cog.learn_entry(name, desc, ai_proposed=name, source_modality=modality)
         return f"「{name}」我记住啦，以后见到就认得 ✓"
 
     def finish_named(topic: dict, name: str) -> str:
@@ -60,7 +60,7 @@ def make_handlers(cog: CognitiveModule, temp):
         extra = "；".join(f"{k}：{v}" for k, v in feats.items())
         desc = topic.get("desc", "")
         desc = f"{desc}；{extra}" if extra else desc
-        return finish_entry(name, desc)
+        return finish_entry(name, desc, modality=topic.get("modality", "text"))
 
     def say(text: str, actions=None, debug: str = "") -> dict:
         return {"say": text, "actions": actions or [], "debug": debug}
@@ -82,13 +82,13 @@ def make_handlers(cog: CognitiveModule, temp):
             desc = f"{desc}；{extra}"
         temp.remove(tid)
         STATE["topic"] = None
-        return finish_entry(name, desc)
+        return finish_entry(name, desc, modality=rec.get("modality", "text"))
 
     def handle_remember(topic: dict) -> str:
         """主人要求记住当前话题：有临时记录就晋升，没有就先暂存再晋升。"""
         tid = topic.get("temp_id")
         if not tid:
-            tid = temp.add(topic["desc"])
+            tid = temp.add(topic["desc"], modality=topic.get("modality", "text"))
             topic["temp_id"] = tid
         if topic.get("kind") == "recognized" and topic.get("entry_id"):
             rec = temp.get(tid)
@@ -155,7 +155,8 @@ def make_handlers(cog: CognitiveModule, temp):
                 attr, value = verdict[1], verdict[2]
                 tid = topic.get("temp_id")
                 if not tid:
-                    tid = temp.add(topic["desc"])
+                    tid = temp.add(topic["desc"],
+                                   modality=topic.get("modality", "text"))
                     topic["temp_id"] = tid
                 temp.update_features(tid, attr, value)
                 if attr == "名字":
@@ -171,6 +172,7 @@ def make_handlers(cog: CognitiveModule, temp):
             if not desc:
                 return say("唔，这张图我没看明白……能换一张，或者用文字告诉我你看到的是什么吗？")
             text = f"{text}，{desc}" if text else desc
+        modality = "image" if image_b64 else "text"  # 感知通道，随条目入库留痕
 
         # 临时记忆命中：新事物七天法则——今天又见到了吗？
         trec = temp.best_match(text)
@@ -179,7 +181,7 @@ def make_handlers(cog: CognitiveModule, temp):
             rec = temp.get(tid)
             promoted = temp.touch(tid)
             STATE["topic"] = {"kind": "temp", "temp_id": tid, "desc": rec["desc"],
-                              "at": _t.time()}
+                              "modality": rec.get("modality", "text"), "at": _t.time()}
             if promoted:  # 七天内不同日期出现≥3次 → 自动晋升永久记忆
                 nm = rec["features"].get("名字")
                 msg = promote_temp(tid, name=nm)
@@ -195,12 +197,13 @@ def make_handlers(cog: CognitiveModule, temp):
         act = cog.perceive(text)
         kind = act["action"]
         if kind == "RECOGNIZED":
-            STATE["topic"] = {"kind": "recognized", "desc": text,
+            STATE["topic"] = {"kind": "recognized", "desc": text, "modality": modality,
                               "entry_id": act["entry_id"], "at": _t.time()}
             return say(f"嗯……这个是「{act['name']}」呀，我认得的～",
                        debug=f"action={kind} via={act.get('via')} conf={act['confidence']}")
         if kind == "DIRECT":
-            STATE["topic"] = {"kind": "direct", "desc": text, "at": _t.time()}
+            STATE["topic"] = {"kind": "direct", "desc": text,
+                              "modality": modality, "at": _t.time()}
             if desc:  # 图片输入：先讲"我看到一张图片"，再自然描述
                 return say(f"我看到一张图片——{desc}\n"
                            f"这类事物我本来就认识，就不占用我的长期记忆啦。"
@@ -214,7 +217,8 @@ def make_handlers(cog: CognitiveModule, temp):
         if kind == "ARBITRATE":
             STATE["topic"] = None
             STATE["pending"] = {"kind": "arbitrate", "text": text,
-                                "candidate_id": act["candidate_id"]}
+                                "candidate_id": act["candidate_id"],
+                                "modality": modality}
             return say("唔，这个和我之前认识的「{}」有点像……它们是同一个吗？".format(
                            act["candidate_name"]),
                        actions=[{"label": "是同一个", "value": "yes"},
@@ -222,15 +226,17 @@ def make_handlers(cog: CognitiveModule, temp):
                                 {"label": "是它的幼体/子类", "value": "child"}],
                        debug=f"action={kind} sim={act['similarity']}")
         if kind == "GUESS":
-            STATE["topic"] = {"kind": "guess", "desc": text,
+            STATE["topic"] = {"kind": "guess", "desc": text, "modality": modality,
                               "guess": act["guess"], "at": _t.time()}
-            STATE["pending"] = {"kind": "guess", "text": text, "guess": act["guess"]}
+            STATE["pending"] = {"kind": "guess", "text": text, "guess": act["guess"],
+                                "modality": modality}
             return say(f"嗯……让我猜猜，这是{act['guess']}？",
                        actions=[{"label": "对", "value": "yes"},
                                 {"label": "不对", "value": "no"}],
                        debug=f"action={kind} conf={act['confidence']}")
-        STATE["topic"] = {"kind": "unknown", "desc": text, "at": _t.time()}
-        STATE["pending"] = {"kind": "naming", "text": text}
+        STATE["topic"] = {"kind": "unknown", "desc": text,
+                          "modality": modality, "at": _t.time()}
+        STATE["pending"] = {"kind": "naming", "text": text, "modality": modality}
         return say("唔……这个我确实不认识。你愿意教教我吗？"
                    "告诉我它叫什么、长什么样就好～",
                    debug=f"action={kind}")
@@ -251,7 +257,8 @@ def make_handlers(cog: CognitiveModule, temp):
         if kind == "arbitrate":
             if value == "child" or re.search(r"子类|幼体|分支|小的", v):
                 STATE["pending"] = {"kind": "naming", "text": p["text"],
-                                    "parent": p["candidate_id"]}
+                                    "parent": p["candidate_id"],
+                                    "modality": p.get("modality", "text")}
                 return say("明白，那它是新的一支。给它起个名字，再简单说说特征吧。")
             if value == "yes" or (as_yes(v) and not as_no(v)):
                 STATE["pending"] = None
@@ -259,7 +266,8 @@ def make_handlers(cog: CognitiveModule, temp):
                 return say("好，那我就把它并到原来的记忆里，只补充、不改动旧的～")
             if value == "no" or as_no(v):
                 STATE["pending"] = None
-                STATE["pending"] = {"kind": "naming", "text": p["text"]}
+                STATE["pending"] = {"kind": "naming", "text": p["text"],
+                                    "modality": p.get("modality", "text")}
                 return say("好，那它是另一个事物。告诉我它叫什么、长什么样吧。")
             STATE["pending"] = p  # 没听懂，再问一次
             return say("唔……你是说这是同一个，还是另一个呀？")
@@ -269,7 +277,8 @@ def make_handlers(cog: CognitiveModule, temp):
                 STATE["pending"] = None
                 return say("啊，猜错了……那先不记，等你想教我的时候再说。")
             # 闸口 1：GUESS 分支确认回环（设计文档 4.2）
-            STATE["pending"] = {"kind": "gate1", "text": p["text"], "guess": p["guess"]}
+            STATE["pending"] = {"kind": "gate1", "text": p["text"], "guess": p["guess"],
+                                "modality": p.get("modality", "text")}
             return say(f"那这就是普通的{p['guess']}，对吗？还是它有特别之处？\n"
                        f"（直接回我：「普通」/ 特征描述 / 「叫<名字>」）")
 
@@ -282,7 +291,8 @@ def make_handlers(cog: CognitiveModule, temp):
             m = re.match(r"^(叫|named\s*)\s*(.+)$", v, re.IGNORECASE)
             if m:
                 STATE["pending"] = {"kind": "named_desc", "name": m.group(2).strip(),
-                                    "guess": guess}
+                                    "guess": guess,
+                                    "modality": p.get("modality", "text")}
                 return say(f"好呀，那「{m.group(2).strip()}」是什么样的呢？简单说说特征就行。")
             pid = cog.learn_patch(guess, {"特征": v}, patch_type="feature_addition")
             STATE["pending"] = None
@@ -296,9 +306,10 @@ def make_handlers(cog: CognitiveModule, temp):
             if p.get("parent"):
                 cog.learn_entry(name, desc,
                                 relation={"type": "subtype_of",
-                                          "parent": p["parent"]})
+                                          "parent": p["parent"]},
+                                source_modality=p.get("modality", "text"))
                 return say(f"记住啦，它是挂在原来那条下面的新一支 ✓")
-            return say(finish_entry(name, desc))
+            return say(finish_entry(name, desc, modality=p.get("modality", "text")))
 
         if kind == "naming":
             STATE["pending"] = None
@@ -308,9 +319,10 @@ def make_handlers(cog: CognitiveModule, temp):
             if p.get("parent"):
                 cog.learn_entry(name, desc,
                                 relation={"type": "subtype_of",
-                                          "parent": p["parent"]})
+                                          "parent": p["parent"]},
+                                source_modality=p.get("modality", "text"))
                 return say("记住啦，它是挂在原来那条下面的新一支 ✓")
-            return say(finish_entry(name, desc))
+            return say(finish_entry(name, desc, modality=p.get("modality", "text")))
 
         STATE["pending"] = None
         return say("唔，我刚才有点懵，已经理清了。我们继续～")

@@ -44,9 +44,23 @@ class CognitiveModule:
         hits = self.memory.search(text, threshold=self.mem_th)
         if hits:
             eid, score = hits[0]
-            self.memory.touch(eid)
-            return {"action": "RECOGNIZED", "entry_id": eid, "confidence": score,
-                    "name": self.memory.entries[eid]["name"], "via": "memory"}
+            e = self.memory.entries[eid]
+            # 个体条目（图像学来的专名，如 Lucy/豆豆）必须经同一性复核——
+            # 向量命中只说明"像这个类别"，不能证明"是同一个人"（防形象不同的同类别个体被认错）
+            if e.get("provenance", {}).get("source_modality") == "image":
+                desc = e["features"].get("描述", "")
+                judge = getattr(self.base, "judge_same", lambda a, b: None)(text, desc)
+                if judge is True:
+                    self.memory.touch(eid)
+                    return {"action": "RECOGNIZED", "entry_id": eid, "confidence": score,
+                            "name": e["name"], "via": "memory"}
+                if judge is None:
+                    return {"action": "GUESS", "guess": e["name"], "confidence": score}
+                # judge is False → 类别像但不是同一人 → 落入下方基础模型认知
+            else:
+                self.memory.touch(eid)
+                return {"action": "RECOGNIZED", "entry_id": eid, "confidence": score,
+                        "name": e["name"], "via": "memory"}
 
         # 2. 基础模型先认知
         conf = self.base.infer_confidence(text)
@@ -117,8 +131,13 @@ class CognitiveModule:
 
     def learn_entry(self, name: str, description: str, chat_log: list | None = None,
                     ai_proposed: str | None = None,
-                    relation: dict | None = None) -> str:
-        """专名/私人知识：建完整主条目（调用前已过三道闸口）。"""
+                    relation: dict | None = None,
+                    source_modality: str = "text") -> str:
+        """专名/私人知识：建完整主条目（调用前已过三道闸口）。
+
+        source_modality 记录感知通道：图像学来的个体（如 Lucy/豆豆）在识别时
+        必须经同一性复核，防止同类不同个体被向量误命中（见 perceive 第 1 步）。
+        """
         return self.memory.save({
             "name": name,
             "features": {
@@ -126,7 +145,8 @@ class CognitiveModule:
                 "embedding": self.embedder.embed(description),
             },
             "embedding_meta": {"model": self.embedder.model_tag},
-            "provenance": {"source_modality": "text", "extraction_channel": "B",
+            "provenance": {"source_modality": source_modality,
+                           "extraction_channel": "B",
                            "completeness": 1.0},
             "relation": relation or {"type": None, "parent": None},
             "formation": {

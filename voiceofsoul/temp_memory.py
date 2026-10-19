@@ -47,13 +47,16 @@ class TempMemory:
             self._persist()
         return gone
 
-    def add(self, desc: str, features: dict | None = None) -> str:
-        """新事物的特征暂存，返回临时记录 id。"""
+    def add(self, desc: str, features: dict | None = None,
+            modality: str = "text") -> str:
+        """新事物的特征暂存，返回临时记录 id。modality 记录感知通道（image/text），
+        晋升永久记忆时传递给条目 provenance。"""
         self._n += 1
         rid = f"T-{self._n:04d}"
         today = date.today().isoformat()
         self.records[rid] = {
             "id": rid, "desc": desc, "features": features or {},
+            "modality": modality,
             "embedding": self.embedder.embed(desc),
             "first_seen": today, "last_seen": today, "days": [today],
         }

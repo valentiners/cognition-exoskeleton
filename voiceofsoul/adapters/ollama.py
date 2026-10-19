@@ -230,8 +230,12 @@ class OllamaBaseModel:
         输出的是"描述文字"，后续比对/命名/存库流程与文本输入完全同路。
         """
         prompt = (
-            "请观察图片，用一段简洁的中文文字描述图中的主体事物，"
-            "涵盖颜色、外形、大小、类型等可辨认的特征。"
+            "请观察图片，用一段简洁的中文文字描述图中的主体事物。\n"
+            "要求抓住能把这个个体与同类其他个体区分开的细节，例如：\n"
+            "- 人物：发型与发色、瞳色、脸型、肤色、服装款式与配色、配饰、显著标记（痣/纹身/伤痕）、表情与气质\n"
+            "- 动物：毛色与花纹、体型、耳/尾/眼的形态、显著标记\n"
+            "- 物品：材质、颜色、形状、磨损或独特之处\n"
+            "先一句话说类别（如「一位年轻女性」），再罗列上述区分性细节。"
             "只输出描述本身，不要输出寒暄、解释或任何其他文字。"
         )
         if hint:
@@ -245,7 +249,14 @@ class OllamaBaseModel:
             "options": {"temperature": 0.2},
         }
         try:
-            return _post(self.host, "/api/generate", payload,
-                         timeout=300).get("response") or None
+            ans = _post(self.host, "/api/generate", payload,
+                        timeout=300).get("response") or None
         except (OSError, KeyError):
             return None
+        if not ans:
+            return None
+        # 剥掉 markdown 装饰（**、#、- 列表符等），模型常带格式输出，污染入库 embedding
+        import re as _re
+        ans = _re.sub(r"\*\*|__|`|^#+\s*", "", ans, flags=_re.MULTILINE)
+        ans = _re.sub(r"^\s*[-•]\s*", "", ans, flags=_re.MULTILINE)
+        return ans.strip()

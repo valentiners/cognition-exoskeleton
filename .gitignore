@@ -11,3 +11,4 @@ build/
 *.log
 _test_lucy.py
 demo_memory.json
+_test_identity.py
