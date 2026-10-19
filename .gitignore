@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 memory.json
+temp_memory.json
 .venv/
 dist/
 build/
@@ -8,3 +9,4 @@ build/
 
 # 测试日志
 *.log
+_test_lucy.py

@@ -132,37 +132,59 @@ class OllamaBaseModel:
             return True
         return None
 
-    def extract_feature(self, context: str, utterance: str) -> tuple[str, str] | None:
-        """对话上下文中的特征供给检测。
+    def classify_followup(self, context: str, utterance: str) -> tuple:
+        """对话跟进分类：主人这句话想干什么？
 
-        主人刚聊完某个事物，新消息可能是在补充它的信息（"她叫Lucy""它三岁"），
-        也可能是提问、闲聊或新话题。是补充 → 返回 (属性, 内容)；否则返回 None。
+        返回 ("feature", 属性, 内容) / ("remember",) / ("forget",) / ("none",)。
+        不弹按钮、不用关键词硬猜——让基础模型像聊天一样理解主人的意图，
+        调用失败时退回关键词兜底。上下文是主人刚才聊的事物描述。
         """
         import re
         prompt = (
-            "背景：主人刚才向我展示/描述了这样一个事物：\n"
+            "背景：主人刚才和我聊到这样一个事物：\n"
             f"{context}\n\n"
             f"主人的新消息：{utterance}\n\n"
-            "如果这条消息是在补充这个事物的具体信息（名字、称呼、属性、特征等），"
-            "请用一行「属性: 内容」的格式输出（例如「名字: Lucy」「年龄: 三岁」），"
-            "不要输出任何其他文字。\n"
-            "如果它是提问、闲聊、新话题或与该事物无关，只输出「无关」。"
+            "请判断这条消息属于哪种情况，只输出一行结论：\n"
+            "- 如果是在补充这个事物的信息（名字、称呼、属性、特征等）"
+            "→ 输出「属性: 内容」（例如「名字: Lucy」「年龄: 三岁」）\n"
+            "- 如果是在要求我永远记住这个事物 → 只输出「记住」\n"
+            "- 如果是在要求我忘掉它、不用记 → 只输出「忘掉」\n"
+            "- 如果是提问、闲聊、新话题或与该事物无关 → 只输出「无关」"
         )
+        ans = ""
         try:
-            ans = self._generate(prompt, timeout=120).strip().strip("。.").strip("「」")
+            ans = self._generate(prompt, timeout=120).strip().strip("。.")
         except OSError:
-            return None
-        if not ans or "无关" in ans:
-            return None
+            pass
         m = re.match(r"^([^:：]{1,12})[:：](.+)$", ans)
-        if not m:
-            return None
-        attr, val = m.group(1).strip().strip("「」"), m.group(2).strip().strip("「」")
-        if not attr or not val:
-            return None
-        if attr.lower() in ("名字", "name", "称呼", "姓名"):
-            attr = "名字"
-        return attr, val
+        if m and "无关" not in ans:
+            attr = m.group(1).strip().strip("「」")
+            val = m.group(2).strip().strip("「」")
+            if attr.lower() in ("名字", "name", "称呼", "姓名"):
+                attr = "名字"
+            if attr and val:
+                return ("feature", attr, val)
+        if "忘掉" in ans or "不用记" in ans:
+            return ("forget",)
+        if "记住" in ans or "记着" in ans:
+            return ("remember",)
+        if "无关" in ans:
+            return ("none",)
+        # —— 关键词兜底（LLM 调用失败或答非所问时）——
+        if re.search(r"忘掉|不用记|别记|forget", utterance, re.IGNORECASE):
+            return ("forget",)
+        if re.search(r"记住|记着|别忘|记一下|remember", utterance, re.IGNORECASE):
+            return ("remember",)
+        m = re.match(r".*(?:名字是|名叫|叫|name is|name's)\s*[「']?([^「』'，,。.!！?？\s]{1,20})",
+                     utterance, re.IGNORECASE)
+        if m:
+            return ("feature", "名字", m.group(1))
+        return ("none",)
+
+    def extract_feature(self, context: str, utterance: str) -> tuple[str, str] | None:
+        """兼容旧接口：只取特征供给语义。"""
+        r = self.classify_followup(context, utterance)
+        return (r[1], r[2]) if r[0] == "feature" else None
 
     def answer_question(self, question: str) -> str | None:
         """常识问答直通：基础模型能覆盖的知识直接回答，不进入记忆流程。
