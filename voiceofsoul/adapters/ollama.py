@@ -52,7 +52,7 @@ class OllamaBaseModel:
     - describe(name)         零样本完整描述；不认识返回 None（闸口 2 的依据）
     """
 
-    def __init__(self, model: str = "Qwen3.8:latest",
+    def __init__(self, model: str = "gemma4:latest",
                  host: str = "http://localhost:11434", think: bool = False):
         self.model = model
         self.host = host
@@ -96,7 +96,7 @@ class OllamaBaseModel:
             return "未知事物"
 
     def describe(self, name: str) -> str | None:
-        """闸口 2 自检：基础模型能否零样本给出完整、稳定的描述。"""
+        """旧版闸口 2 自检：基础模型能否零样本给出完整、稳定的描述。"""
         prompt = (
             f"请用一两句话描述「{name}」是什么。如果你完全不认识这个词，"
             f"只输出「不认识」。不要输出任何其他文字。"
@@ -108,6 +108,61 @@ class OllamaBaseModel:
         if any(k in ans for k in ("不认识", "无法", "不知道", "不确定")) or not ans:
             return None
         return ans
+
+    def is_public_knowledge(self, name: str, context: str = "") -> bool | None:
+        """闸口 2 自检（结合上下文）：该事物是公共知识还是私人特定。
+
+        解决"常见人名/通名误判"：不问模型认不认识这个词，而问这个事物
+        是广为人知的公共概念，还是只特定于主人个人圈子的私人事物。
+        返回 True（公共）/False（私人）；模型拿不准或调用失败返回 None。
+        """
+        prompt = (
+            f"有人想把「{name}」作为一个需要长期记住的特定事物。"
+            f"相关背景：{context or '（暂无更多描述）'}\n"
+            "请问它属于广为人知的公共知识/通用概念，"
+            "还是只特定于某个人或小圈子的私人事物？只输出「公共」或「私人」。"
+        )
+        try:
+            ans = self._generate(prompt)
+        except OSError:
+            return None
+        if "私人" in ans:
+            return False
+        if "公共" in ans:
+            return True
+        return None
+
+    def extract_feature(self, context: str, utterance: str) -> tuple[str, str] | None:
+        """对话上下文中的特征供给检测。
+
+        主人刚聊完某个事物，新消息可能是在补充它的信息（"她叫Lucy""它三岁"），
+        也可能是提问、闲聊或新话题。是补充 → 返回 (属性, 内容)；否则返回 None。
+        """
+        import re
+        prompt = (
+            "背景：主人刚才向我展示/描述了这样一个事物：\n"
+            f"{context}\n\n"
+            f"主人的新消息：{utterance}\n\n"
+            "如果这条消息是在补充这个事物的具体信息（名字、称呼、属性、特征等），"
+            "请用一行「属性: 内容」的格式输出（例如「名字: Lucy」「年龄: 三岁」），"
+            "不要输出任何其他文字。\n"
+            "如果它是提问、闲聊、新话题或与该事物无关，只输出「无关」。"
+        )
+        try:
+            ans = self._generate(prompt, timeout=120).strip().strip("。.").strip("「」")
+        except OSError:
+            return None
+        if not ans or "无关" in ans:
+            return None
+        m = re.match(r"^([^:：]{1,12})[:：](.+)$", ans)
+        if not m:
+            return None
+        attr, val = m.group(1).strip().strip("「」"), m.group(2).strip().strip("「」")
+        if not attr or not val:
+            return None
+        if attr.lower() in ("名字", "name", "称呼", "姓名"):
+            attr = "名字"
+        return attr, val
 
     def answer_question(self, question: str) -> str | None:
         """常识问答直通：基础模型能覆盖的知识直接回答，不进入记忆流程。
@@ -155,6 +210,7 @@ class OllamaBaseModel:
         prompt = (
             "请观察图片，用一段简洁的中文文字描述图中的主体事物，"
             "涵盖颜色、外形、大小、类型等可辨认的特征。"
+            "只输出描述本身，不要输出寒暄、解释或任何其他文字。"
         )
         if hint:
             prompt += f"\n主人的补充说明：{hint}"

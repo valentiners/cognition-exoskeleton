@@ -51,7 +51,7 @@ class CognitiveModule:
         # 2. 基础模型先认知
         conf = self.base.infer_confidence(text)
         guess = self.base.infer(text) if conf > 0.3 else None
-        if guess and conf >= self.base_th:
+        if guess and guess != "未知事物" and conf >= self.base_th:
             related = [eid for eid, e in self.memory.entries.items()
                        if guess in e.get("features", {}).get("描述", "")]
             if len(related) == 1:  # 类别唯一专名 → 同一性裁决确认后认出
@@ -90,8 +90,18 @@ class CognitiveModule:
         return {"action": "UNKNOWN"}
 
     # ---------- 闸口 2：专名/通名自检 ----------
-    def is_common_knowledge(self, name: str) -> bool:
-        """基础模型能否零样本给出完整、稳定的描述（设计文档 4.2 闸口 2）。"""
+    def is_common_knowledge(self, name: str, desc: str | None = None) -> bool:
+        """闸口 2：该事物是公共通名还是私人专名（结合描述上下文判断）。
+
+        旧版只探测"模型认不认识这个词"，常见人名（小黄、Lucy）会被误判为
+        公共知识；新版改问"公共还是私人"。模型拿不准时默认信任主人的教学。
+        """
+        probe = getattr(self.base, "is_public_knowledge", None)
+        if probe:
+            ans = probe(name, desc or "")
+            if ans is not None:
+                return ans
+            return False  # 拿不准 → 默认私人，交给闸口 3 查重兜底
         return self.base.describe(name) is not None
 
     # ---------- 学习 ----------
