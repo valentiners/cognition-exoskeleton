@@ -61,7 +61,7 @@ See [examples/sample_session.md](examples/sample_session.md) for a recorded run 
 
 ## Design doc
 
-The full design lives in [docs/外挂认知模块与记忆模块方案_v3.3.md](docs/外挂认知模块与记忆模块方案_v3.3.md) (Chinese) — two-tier thresholds & gray-zone arbitration, dual-channel multimodal feature extraction, dual-gate anti-duplication, the patch zone, zero-downtime patch auditing on base-model swap, and health-based forgetting. 设计文档为中文，是本项目的设计"宪法"。
+The full design lives in [docs/外挂认知模块与记忆模块方案_v3.4.md](docs/外挂认知模块与记忆模块方案_v3.4.md) (Chinese) — two-tier thresholds & gray-zone arbitration, dual-channel multimodal feature extraction, dual-gate anti-duplication, the patch zone, zero-downtime patch auditing on base-model swap, and health-based forgetting. 设计文档为中文，是本项目的设计"宪法"。
 
 ## Roadmap
 
@@ -86,7 +86,7 @@ cognition-exoskeleton/
 │   ├── embedding.py       # hashing baseline embedder (zero-dep; swappable for real models)
 │   ├── memory.py          # memory module: entries + patches, JSON persistence
 │   └── cognition.py       # cognitive module: perceive / arbitrate / learn / record mistakes
-├── docs/                  # design doc (方案 v3.3, Chinese)
+├── docs/                  # design doc (方案 v3.4, Chinese)
 ├── examples/              # recorded sample session
 ├── .github/ABOUT.md       # finalized GitHub About text (bilingual) & topics
 └── LICENSE                # Apache-2.0, (c) 2026 Ricky Li
