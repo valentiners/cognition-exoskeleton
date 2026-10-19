@@ -183,7 +183,7 @@ def main():
     print(" stats | exit / 退出")
     print("=" * 60)
     embedder = HashingEmbedder()
-    memory = MemoryModule("memory.json", embedder)
+    memory = MemoryModule("demo_memory.json", embedder)  # 独立演示记忆，不碰真实记忆库
     cog = CognitiveModule(DemoBaseModel(embedder), memory, embedder)
 
     while True:
@@ -215,7 +215,7 @@ def main():
             print("  [unknown] I admit I cannot recognize this.")
             naming_flow(cog)
 
-    print("\nsession ended, memory persisted to memory.json")
+    print("\nsession ended, memory persisted to demo_memory.json")
 
 
 if __name__ == "__main__":

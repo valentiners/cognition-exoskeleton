@@ -1,5 +1,7 @@
 # Sample Session
 
+> **版本注记**：本实录记录的是离线 CLI 演示（`demo.py`）的 **v3.3 时代行为**（y/n 确认、按钮式回环）。v3.4 定型后的对话式交互（无按钮、自由文本、临时记忆七天法则）见浏览器测试服务与设计文档 §9.1/§9.2。
+
 Recorded run of `python demo.py` (primitive version; the simulated base model knows three common concepts: cat / dog / car).
 
 ## Session: the full loop

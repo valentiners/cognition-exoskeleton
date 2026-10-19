@@ -10,3 +10,4 @@ build/
 # 测试日志
 *.log
 _test_lucy.py
+demo_memory.json

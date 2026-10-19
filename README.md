@@ -2,8 +2,8 @@
 
 > A "cognitive soul" plug-in for frozen base models — 一款大模型的认知灵魂外挂.
 > Without touching any weights, it gives any already-trained model a continuous-learning loop:
-> **perceive → ask the master when unsure → name together → store → reuse & self-correct.**
-> （识别 → 不确定就求助主人 → 共同命名 → 存库 → 复用与纠错）
+> **perceive → judge by itself first → ask the master only when truly unsure → name together → remember → reuse & self-correct.**
+> （识别 → 基础模型先自主判断 → 真拿不准才求助主人 → 共同命名 → 记忆 → 复用与纠错）
 
 **voiceofsoul** · primitive version (v0.1.0) · Apache-2.0
 
@@ -11,83 +11,93 @@
 
 ## What this is
 
-Two external modules attached to a frozen base model:
+External modules attached to a frozen base model (local Ollama, swappable):
 
-- **Cognitive Module** — compares every new input against the base model's compressed knowledge and the memory store, decides: recognize, guess, arbitrate, or admit unknown.
+- **Cognitive Module** — base model judges first: common knowledge passes straight through (no questions asked); only genuinely uncertain cases are escalated to the master. 基础模型先认知，外挂只做它做不了的。
 - **Memory Module** — an append-only knowledge base: a main entry store (`entries`, for proper names / private knowledge) plus a **patch zone** (`patches`) that only stores incremental knowledge the base model lacks. （补丁区：基础模型已知概念只补粒度，绝不整库重复记忆。）
+- **Temp Memory** — new features are cached for 7 days first; they graduate to permanent memory when the master says "remember it", or automatically after appearing on 3 different days within a week. （临时记忆 + 七天法则。）
+- **Conversational by design** — no forced button choices; the master talks naturally ("她叫 Lucy" / "记住它" / "忘掉"), and free text answers every pending flow. 拟人化、无按钮、自由文本即回答。
 
 ```
-new input ──→ unified description ──→ memory search (>=70% → confirmed hit)
+new input ──→ unified description ──→ permanent memory hit (≥0.78 → recognized)
                       │
-        ┌─────────────┼──────────────────┐
-        ▼             ▼                  ▼
-     >=70%       51%~70% gray zone   <51%
-   confirmed     master arbitrates   vs. base model
-      hit        MERGE/NEW/SUBCLASS  (>51% guess / <=51% admit unknown → naming)
+        ┌─────────────┼──────────────────────────────┐
+        ▼             ▼                              ▼
+    recognized   base model knows it?          truly unknown
+    (memory)     ├─ unique proper name ──→ LLM identity judge → recognize / learn
+                 ├─ none ──────────────→ DIRECT pass-through (no questions)
+                 └─ unsure ────────────→ nearest neighbor + LLM judge → guess / unknown
 ```
 
 ## Core principles
 
 - **The base model is never modified** — call-only, zero weight updates. 原模型只被调用，权重与源文件不被修改。
 - **No duplicate memory** — common knowledge the base model already has never enters the store; only *patches* are attached to its known concepts. 防重复记忆。
-- **Master arbitration is non-delegable** — at every fork (gray zone, naming, patch conflicts) the master decides. 主人仲裁不可让渡。
+- **Judge locally first** — the base model decides what it can (identity judgment replaces pop-up arbitration); the master's arbitration is reserved for what it genuinely can't. 能自己裁决的不打扰主人。
+- **Two-layer memory** — temp cache (7-day rule) + permanent store (three-gate anti-duplication); nothing enters permanent memory without either the master's word or the 3-days-in-a-week rule. 双层记忆。
+- **Conversational, humanized** — all replies in first-person natural language; mechanical labels stay in debug fields only. 拟人化对话。
 - **Append-only** — rejected names, mistakes, audits: everything leaves a trail. 只追加、不覆盖。
 - **Single-master design** — one master = supreme authority and the only trusted input source. 单主人原则。
 
 ## Quick start
 
-Zero dependencies (pure Python standard library), Python 3.9+:
+Zero third-party dependencies (pure Python standard library), Python 3.9+.
+
+### Real mode (local Ollama + browser)
 
 ```bash
-git clone https://github.com/<your-org>/cognition-exoskeleton.git
-cd cognition-exoskeleton
+# 1. start local Ollama with a vision+text model (default: gemma4) and an embedding model (default: embeddinggemma-2)
+# 2. launch the test service (auto-opens the browser)
+start.bat            # Windows; or: python server.py
+```
+
+Chat in the browser: describe things or send images. The exoskeleton recognizes what it knows, passes through common knowledge, caches features you supply, and remembers what you tell it to.
+
+### Offline demo (no Ollama needed)
+
+```bash
 python demo.py
 ```
 
-`demo.py` is an interactive CLI demo: you play the **master** （主人）, and a simulated base model (with a little built-in common knowledge) drives the full loop — guess → confirm → patch/entry → re-recognize → record mistakes. Memory persists to `memory.json` in the working directory.
-
-### Session commands
-
-| Input | Effect |
-|---|---|
-| any descriptive text | recognition flow (recognize / arbitrate / guess / unknown) |
-| `mistake <entry_id> <mistook_as> [new_feature]`（中文等效：`错误 <ID> <错认为> [特征]`） | record a recognition mistake (append-only) |
-| `stats`（`统计`） | memory store statistics |
-| `exit` / `quit`（`退出`） | end session |
-
-## Example
-
-See [examples/sample_session.md](examples/sample_session.md) for a recorded run with annotations mapping each step to the design doc.
+`demo.py` is an interactive CLI demo with a simulated base model (v3.3-era behaviors: y/n prompts). It uses its own `demo_memory.json` and never touches the real memory store.
 
 ## Design doc
 
-The full design lives in [docs/外挂认知模块与记忆模块方案_v3.4.md](docs/外挂认知模块与记忆模块方案_v3.4.md) (Chinese) — two-tier thresholds & gray-zone arbitration, dual-channel multimodal feature extraction, dual-gate anti-duplication, the patch zone, zero-downtime patch auditing on base-model swap, and health-based forgetting. 设计文档为中文，是本项目的设计"宪法"。
+The full design lives in [docs/外挂认知模块与记忆模块方案_v3.4.md](docs/外挂认知模块与记忆模块方案_v3.4.md) (Chinese) — the project's design "constitution". **Chapter 9 (v3.4) is the authoritative record of the browser-tested mechanisms**: base-model-first perception, conversational interaction without buttons, two-layer memory with the 7-day rule, feature-supply pipeline, calibrated thresholds, and the full change log.
 
 ## Roadmap
 
-Primitive version already ships: two-tier thresholds + master arbitration, dual-gate anti-duplication, patch zone (`feature_addition` / `correction`), append-only storage, JSON persistence, CLI demo.
+Primitive version already ships (via local Ollama): base-model-first perception with LLM identity judgment, three-gate anti-duplication, two-layer memory (temp 7-day rule + permanent store), patch zone, conversational humanized UI (cat-paw send button, cancelable in-flight requests), model hot-switching with vector rebuild, image perception, CLI offline demo.
 
 | Direction | Status | Design doc section |
 |---|---|---|
+| Library packaging (`pyproject.toml`, importable `voiceofsoul`) | ⏳ roadmap | §9.9 |
+| OpenClaw skill-plugin integration (spec TBD) | ⏳ roadmap | §9.9 |
+| Video / real-world perception interface | ⏳ reserved | §9.9 |
+| Memory observability UI (inspect / intervene temp & permanent) | ⏳ roadmap | §9.9 |
+| Async arbitration (suspend vs. degrade when master is away) | ⏳ open | §9.9 |
+| Upgrade `demo.py` to v3.4 behaviors (temp memory, conversational) | ⏳ roadmap | §9.1/§9.2 |
 | Lazy patch auditing (zero downtime on base-model swap) | ⏳ roadmap | 4.5 |
-| Inter-patch conflict arbitration (`priority`) | ⏳ roadmap | 4.5.6 |
-| REDUNDANT perturbation stability test | ⏳ roadmap | 4.5.3 |
-| Per-model threshold calibration buckets | ⏳ roadmap | 5.3 |
-| Real embedding model backend (current hashing baseline is offline-demo only) | ⏳ roadmap | 3.2 |
-| Image / multimodal input | ⏳ roadmap | §3 |
-| Voice input | ⏳ roadmap | open issues |
+| Voice input | ⏳ open issues | §8 |
 
 ## Project layout
 
 ```
 cognition-exoskeleton/
-├── demo.py                # interactive CLI demo (you are the master)
-├── voiceofsoul/           # core package
-│   ├── embedding.py       # hashing baseline embedder (zero-dep; swappable for real models)
-│   ├── memory.py          # memory module: entries + patches, JSON persistence
-│   └── cognition.py       # cognitive module: perceive / arbitrate / learn / record mistakes
-├── docs/                  # design doc (方案 v3.4, Chinese)
-├── examples/              # recorded sample session
+├── server.py              # minimal HTTP test service + session orchestration
+├── start.bat              # Windows one-click launcher (exclusive-port guard)
+├── demo.py                # offline CLI demo (v3.3-era; uses demo_memory.json)
+├── voiceofsoul/           # core package (stdlib-only)
+│   ├── cognition.py       # perception pipeline + three gates + learning
+│   ├── memory.py          # permanent memory: entries + patches
+│   ├── temp_memory.py     # temp memory + 7-day graduation rule
+│   ├── embedding.py       # hashing baseline embedder (offline demo only)
+│   └── adapters/ollama.py # the only file that talks to Ollama
+├── web/index.html         # browser test UI (cat-paw button, staged images)
+├── _test_temp_memory.py   # unit tests for the 7-day rule (mocked dates)
+├── docs/                  # design doc (方案 v3.4, Chinese) — chapter 9 is authoritative
+├── examples/              # recorded CLI sample session (v3.3-era)
+├── AGENTS.md              # charter for coding agents (read first)
 ├── .github/ABOUT.md       # finalized GitHub About text (bilingual) & topics
 └── LICENSE                # Apache-2.0, (c) 2026 Ricky Li
 ```
