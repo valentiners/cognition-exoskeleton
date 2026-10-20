@@ -93,11 +93,12 @@ From AGENTS.md — restated because they bite:
    Ollama-down error path (mock by pointing OLLAMA_HOST at a dead port);
 5. `start.bat` untouched and still exclusive (two-layer lock).
 
-## 8. Open questions for Kimi/Ricky（开工前先确认的开放点）
+## 8. Open questions — RESOLVED by Kimi/Ricky（已拍板，按此实现）
 
-1. `session.json` last-writer-wins acceptable for primitive? ( assumed yes per §2.3 )
-2. `--image` accepts a filesystem path only, not base64? ( SKILL.md shows a path )
-3. `actions` array: keep the server's optional button payloads, or empty in CLI v1?
+1. `session.json` concurrency: **last-writer-wins is accepted for the primitive version**;
+   no file locking. Document the limitation in the module docstring;
+2. `--image` accepts **a filesystem path only** — no base64 stdin (matches SKILL.md);
+3. `actions` array: **keep the same optional payloads as the server** (harmless reuse).
 
 ---
 
