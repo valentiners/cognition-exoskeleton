@@ -24,6 +24,8 @@ WEB_DIR = Path(__file__).parent / "web"
 EXIT_VALUES = {"退出", "exit", "quit"}
 # 常识问句特征：直通基础模型回答，不进识别/记忆流程
 QA_PATTERN = re.compile(r"(是什么|什么是|为什么|怎么|如何|哪里|谁|吗|呢|么|？|\?)")
+# "再想想"唤醒休眠记忆（9.10 L3 层）：必须在问答直通之前判定——"你忘了吗"含"吗"会被问句规则截胡
+RECALL_PATTERN = re.compile(r"(再想想|好好想想|仔细想想|你忘了吗|你忘了)")
 
 # ------------------------------------------------------------------ 全局状态
 # 单主人原则：一个服务实例只服务一个主人，会话状态即全局状态。
@@ -41,7 +43,7 @@ def make_handlers(cog: CognitiveModule, temp):
         if cog.is_common_knowledge(name, desc):
             pid = cog.learn_patch(name, {"描述": desc}, patch_type="feature_addition")
             return f"「{name}」听起来是大家都知道的公共知识，我就不占专属记忆了，只留个小补丁备查～"
-        best = cog.memory.best_match(desc)
+        best = cog.memory.best_match(desc, include_dormant=True)  # 查重不受休眠限制（9.10）
         if best and best[1] >= cog.mem_th:
             cog.merge_into(best[0], desc, note="闸口 3 查重命中 MERGE")
             return "这个和我已有的记忆太像了，我就把它并进原来的条目，不重复占地方。"
@@ -114,6 +116,31 @@ def make_handlers(cog: CognitiveModule, temp):
         if p and p.get("kind") == "promote_name" and text.strip() and not image_b64:
             STATE["pending"] = None
             return say(promote_temp(p["temp_id"], name=text.strip()))
+
+        # 0a5. "再想想"：唤醒沉睡的记忆（9.10）——分层翻到休眠层，命中即复活
+        p = STATE.get("pending")
+        topic_now = STATE.get("topic")
+        if not image_b64 and RECALL_PATTERN.search(text) and (p or fresh_topic(topic_now)):
+            import time as _t
+            src = p or topic_now
+            stimulus = src.get("text") or src.get("desc", "")
+            act = cog.recall(stimulus)
+            if act["action"] == "RECOGNIZED":
+                STATE["pending"] = None
+                STATE["topic"] = {"kind": "recognized", "desc": stimulus,
+                                  "modality": src.get("modality", "text"),
+                                  "entry_id": act["entry_id"], "at": _t.time()}
+                if act.get("layer") == "dormant":
+                    return say(f"啊……我想起来了！这是「{act['name']}」呀～",
+                               debug=f"action=RECALL_DORMANT sim={act['confidence']}")
+                return say(f"嗯……这个是「{act['name']}」呀，我认得的～",
+                           debug=f"action=RECALL sim={act['confidence']} layer={act.get('layer')}")
+            if act["action"] == "GUESS":
+                return say(f"唔……我有点印象，又不太敢确定——是「{act['guess']}」吗？",
+                           debug=f"action=RECALL_GUESS sim={act['confidence']} layer={act.get('layer')}")
+            return say("唔……我把记忆的角落都翻了一遍，真的没有印象……"
+                       "要不你提醒我一下？",
+                       debug="action=RECALL_MISS（未决流程保持原状）")
 
         # 0b. 未决流程的自由文本应答：主人的一句话就是回答，不用按钮
         # （纯问句除外——那是新问题，不是回答，交给下方问答/识别流程）
@@ -346,9 +373,12 @@ def make_handlers(cog: CognitiveModule, temp):
         return say("唔，我刚才有点懵，已经理清了。我们继续～")
 
     def stats() -> dict:
+        from voiceofsoul.memory import is_dormant
         s = cog.memory.stats()
         entries = [{"id": eid, "name": e["name"],
                     "hits": e.get("health", {}).get("hit_count", 0),
+                    "last_hit": e.get("health", {}).get("last_hit_at"),
+                    "dormant": is_dormant(e),
                     "errors": e.get("threshold_meta", {}).get("mistake_count", 0)}
                    for eid, e in cog.memory.entries.items()]
         patches = [{"id": p["id"], "target": p["target"], "type": p["type"],

@@ -7,6 +7,10 @@
 
 核心原则：只追加、不覆盖 —— update 一律 append 到 updates / audit_history。
 单主人原则：不设权限层，主人是唯一可信输入源。
+
+分层检索（设计文档 9.10）：高频层 / 活跃层 / 休眠层。
+休眠是查询时派生的判定（last_hit_at 距今 > DORMANT_DAYS），不设状态位、
+不搬库存储；命中即 touch 刷新 last_hit_at，条目自然复活。
 """
 
 from __future__ import annotations
@@ -15,9 +19,44 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+DORMANT_DAYS = 365      # 超过这么久未被调用 → 休眠（9.10，概念默认待标定）
+FREQ_WINDOW_DAYS = 90   # 高频层：近期窗口
+FREQ_MIN_HITS = 3       # 高频层：窗口内最少命中（primitive 用累计数近似）
+
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _days_since(iso: str | None) -> float | None:
+    """距今天数；无法解析返回 None（视为活跃，保守不误休眠）。"""
+    if not iso:
+        return None
+    try:
+        return (datetime.now() - datetime.fromisoformat(iso)).total_seconds() / 86400
+    except ValueError:
+        return None
+
+
+def _last_active_iso(entry: dict) -> str | None:
+    """条目最近一次被调用的时间；从未命中过以创建时间起算。"""
+    return entry.get("health", {}).get("last_hit_at") or \
+        entry.get("formation", {}).get("created_at")
+
+
+def is_dormant(entry: dict, days: int = DORMANT_DAYS) -> bool:
+    d = _days_since(_last_active_iso(entry))
+    return d is not None and d > days
+
+
+def is_frequent(entry: dict, window_days: int = FREQ_WINDOW_DAYS,
+                min_hits: int = FREQ_MIN_HITS) -> bool:
+    """高频层判定：近期有命中且累计命中达标（primitive 近似，正式版窗口内计数）。"""
+    h = entry.get("health", {})
+    if h.get("hit_count", 0) < min_hits:
+        return False
+    d = _days_since(h.get("last_hit_at"))
+    return d is not None and d <= window_days
 
 
 class MemoryModule:
@@ -60,14 +99,26 @@ class MemoryModule:
         self.entries[entry_id]["updates"].append(update_record)
         self._persist()
 
-    def search(self, query_text: str, threshold: float = 0.70) -> list[tuple[str, float]]:
-        """首轮向量检索，返回 [(entry_id, score)]，按相似度降序。
+    def search(self, query_text: str, threshold: float = 0.70,
+               layer: str = "all") -> list[tuple[str, float]]:
+        """分层向量检索，返回 [(entry_id, score)]，按相似度降序。
 
+        layer（设计文档 9.10）：
+        - "frequent"：非休眠且高频（L1 日常首选）
+        - "active"：全部非休眠（L2 静默扩检）
+        - "dormant"：仅休眠条目（L3，仅主人"再想想"时）
+        - "all"：全库（默认，兼容旧调用；日常识别请显式传层）
         与基础模型解耦：向量来自独立编码器（设计文档 3.2）。
         """
         q = self.embedder.embed(query_text)
         results = []
         for eid, e in self.entries.items():
+            if layer == "frequent" and (is_dormant(e) or not is_frequent(e)):
+                continue
+            if layer == "active" and is_dormant(e):
+                continue
+            if layer == "dormant" and not is_dormant(e):
+                continue
             emb = e.get("features", {}).get("embedding")
             if not emb:
                 continue
@@ -76,11 +127,18 @@ class MemoryModule:
                 results.append((eid, round(score, 4)))
         return sorted(results, key=lambda x: -x[1])
 
-    def best_match(self, query_text: str) -> tuple[str, float] | None:
-        """全库找最接近的条目（不限阈值），供灰色地带仲裁与闸口 3 查重。"""
+    def best_match(self, query_text: str,
+                   include_dormant: bool = False) -> tuple[str, float] | None:
+        """全库（默认排除休眠）找最接近的条目，供灰色地带仲裁与闸口 3 查重。
+
+        查重/仲裁不能因条目休眠就放行重复建库——默认排除休眠只是日常识别
+        的语义；需要全库时显式 include_dormant=True（设计文档 9.10）。
+        """
         q = self.embedder.embed(query_text)
         best, best_score = None, -1.0
         for eid, e in self.entries.items():
+            if not include_dormant and is_dormant(e):
+                continue
             emb = e.get("features", {}).get("embedding")
             if not emb:
                 continue
@@ -90,10 +148,14 @@ class MemoryModule:
         return (best, round(best_score, 4)) if best else None
 
     def touch(self, entry_id: str):
-        """命中后记 health（遗忘巡检的数据源，设计文档 6.3）。"""
+        """命中后记 health（遗忘巡检/休眠判定的数据源，设计文档 6.3 / 9.10）。
+
+        必须落盘：last_hit_at 若随重启丢失，休眠判定会系统性失效。
+        """
         h = self.entries[entry_id].setdefault("health", {"hit_count": 0, "last_hit_at": None})
         h["hit_count"] += 1
         h["last_hit_at"] = _now()
+        self._persist()
 
     # ---------- 补丁区 ----------
     def save_patch(self, patch: dict) -> str:

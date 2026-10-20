@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from .memory import is_dormant
+
 
 class CognitiveModule:
     GRAY_ZONE_ACTIONS = ("MERGE", "NEW", "SUBCLASS")
@@ -40,8 +42,9 @@ class CognitiveModule:
         3. 基础模型也不确定 → 向量近邻 + 基础模型同一性裁决（不再事事问主人）
         4. 都不成立 → UNKNOWN，进入命名教学流程
         """
-        # 1. 记忆库精确命中
-        hits = self.memory.search(text, threshold=self.mem_th)
+        # 1. 记忆库精确命中（分层检索 9.10：先高频层，未中静默扩到活跃层；休眠层不查）
+        hits = self.memory.search(text, threshold=self.mem_th, layer="frequent") \
+            or self.memory.search(text, threshold=self.mem_th, layer="active")
         if hits:
             eid, score = hits[0]
             e = self.memory.entries[eid]
@@ -67,7 +70,8 @@ class CognitiveModule:
         guess = self.base.infer(text) if conf > 0.3 else None
         if guess and guess != "未知事物" and conf >= self.base_th:
             related = [eid for eid, e in self.memory.entries.items()
-                       if guess in e.get("features", {}).get("描述", "")]
+                       if not is_dormant(e)
+                       and guess in e.get("features", {}).get("描述", "")]
             if len(related) == 1:  # 类别唯一专名 → 同一性裁决确认后认出
                 eid = related[0]
                 desc = self.memory.entries[eid]["features"].get("描述", "")
@@ -89,7 +93,7 @@ class CognitiveModule:
                 return {"action": "DIRECT", "guess": guess,
                         "confidence": round(conf, 4)}
 
-        # 3. 基础模型不确定：近邻 + 同一性裁决（替代灰色地带事事仲裁）
+        # 3. 基础模型不确定：近邻 + 同一性裁决（替代灰色地带事事仲裁；休眠条目不参与）
         best = self.memory.best_match(text)
         if best and best[1] >= 0.5:
             eid, score = best
@@ -101,6 +105,34 @@ class CognitiveModule:
                         "name": self.memory.entries[eid]["name"], "via": "judge"}
 
         # 4. 未知 → 命名教学流程
+        return {"action": "UNKNOWN"}
+
+    # ---------- 休眠唤醒（主人"再想想"，设计文档 9.10 L3 层） ----------
+    def recall(self, text: str) -> dict:
+        """分层唤醒检索：高频 → 活跃 → 休眠，逐层下探，命中即停。
+
+        只做记忆向量检索、不走基础模型认知——基础模型第一遍已经答过，
+        答不出（UNKNOWN/没叫出专名）主人才会说"再想想"，轮不到再猜一遍常识。
+        命中后 touch 刷新 last_hit_at：休眠是派生态，命中即自然复活。
+        """
+        for layer in ("frequent", "active", "dormant"):
+            hits = self.memory.search(text, threshold=self.mem_th, layer=layer)
+            if not hits:
+                continue
+            eid, score = hits[0]
+            e = self.memory.entries[eid]
+            # 图像个体同一性复核与日常识别同规则（防同类不同个体被向量误命中）
+            if e.get("provenance", {}).get("source_modality") == "image":
+                desc = e["features"].get("描述", "")
+                judge = getattr(self.base, "judge_same", lambda a, b: None)(text, desc)
+                if judge is False:
+                    continue  # 类别像但不是同一人 → 下一层继续找
+                if judge is None:
+                    return {"action": "GUESS", "guess": e["name"], "confidence": score,
+                            "layer": layer}
+            self.memory.touch(eid)
+            return {"action": "RECOGNIZED", "entry_id": eid, "confidence": score,
+                    "name": e["name"], "layer": layer}
         return {"action": "UNKNOWN"}
 
     # ---------- 闸口 2：专名/通名自检 ----------
