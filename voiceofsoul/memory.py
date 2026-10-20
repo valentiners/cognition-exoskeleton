@@ -20,8 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 DORMANT_DAYS = 365      # 超过这么久未被调用 → 休眠（9.10，概念默认待标定）
-FREQ_WINDOW_DAYS = 90   # 高频层：近期窗口
-FREQ_MIN_HITS = 3       # 高频层：窗口内最少命中（primitive 用累计数近似）
+FREQ_WINDOW_DAYS = 90   # 高频层：近窗口期内有命中即算（不设次数门槛，9.10 修订）
 
 
 def _now() -> str:
@@ -49,13 +48,13 @@ def is_dormant(entry: dict, days: int = DORMANT_DAYS) -> bool:
     return d is not None and d > days
 
 
-def is_frequent(entry: dict, window_days: int = FREQ_WINDOW_DAYS,
-                min_hits: int = FREQ_MIN_HITS) -> bool:
-    """高频层判定：近期有命中且累计命中达标（primitive 近似，正式版窗口内计数）。"""
-    h = entry.get("health", {})
-    if h.get("hit_count", 0) < min_hits:
-        return False
-    d = _days_since(h.get("last_hit_at"))
+def is_frequent(entry: dict, window_days: int = FREQ_WINDOW_DAYS) -> bool:
+    """高频层判定：近窗口期内被调用过（主人 2026-10-20 修订：不设次数门槛）。
+
+    理由：命中一次就说明主人近期还在提它，检索优先给它；
+    次数权重交给未来的检索排序优化，分层过滤只管"近期是否活着"。
+    """
+    d = _days_since(entry.get("health", {}).get("last_hit_at"))
     return d is not None and d <= window_days
 
 
