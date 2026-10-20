@@ -16,3 +16,4 @@ _test_identity.py
 _test_context.py
 _test_dormant.py
 _test_dormant_e2e.py
+_test_degrade.py

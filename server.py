@@ -12,6 +12,7 @@
 import argparse
 import json
 import re
+import time as _t
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,6 +27,9 @@ EXIT_VALUES = {"退出", "exit", "quit"}
 QA_PATTERN = re.compile(r"(是什么|什么是|为什么|怎么|如何|哪里|谁|吗|呢|么|？|\?)")
 # "再想想"唤醒休眠记忆（9.10 L3 层）：必须在问答直通之前判定——"你忘了吗"含"吗"会被问句规则截胡
 RECALL_PATTERN = re.compile(r"(再想想|好好想想|仔细想想|你忘了吗|你忘了)")
+# 仲裁挂起超时（与话题冷却同口径）：超时未答 → 降级暂存临时记忆（9.11）
+PENDING_TTL = 1800
+DEGRADE_KINDS = {"naming", "guess", "gate1", "arbitrate"}  # promote_name 不适用（9.11）
 
 # ------------------------------------------------------------------ 全局状态
 # 单主人原则：一个服务实例只服务一个主人，会话状态即全局状态。
@@ -110,6 +114,22 @@ def make_handlers(cog: CognitiveModule, temp):
         import time as _t
         return topic and (_t.time() - topic.get("at", 0)) < 1800
 
+    # ---------- 仲裁超时降级（9.11） ----------
+    def pending_expired(p) -> bool:
+        return bool(p) and bool(p.get("at")) and (_t.time() - p["at"]) > PENDING_TTL
+
+    def degrade_pending(p):
+        """超时未答的仲裁挂起项 → 静默写入临时记忆，七天法则兜底。
+
+        铁律：只暂存、不进永久库、不做 MERGE；主人明确取消不走这里（真丢弃）。
+        """
+        if not p or p.get("kind") not in DEGRADE_KINDS or not p.get("text"):
+            return
+        if temp.best_match(p["text"]):  # 同一件事的近似项已在册，不重复暂存
+            return
+        tid = temp.add(p["text"], modality=p.get("modality", "text"))
+        print(f"[仲裁降级] 挂起项超时未答，已暂存临时记忆 {tid}：{p['text'][:40]}")
+
     def chat(text: str, image_b64: str | None = None) -> dict:
         # 0a. 晋升追问命名的回答："它叫什么"的自由文本应答
         p = STATE.get("pending")
@@ -150,8 +170,14 @@ def make_handlers(cog: CognitiveModule, temp):
                 STATE["pending"] = None
                 STATE["topic"] = None
                 return say("好～那就当没这回事。")
-            return respond(text.strip())  # respond 内部读取并清理 pending
+            if pending_expired(p):  # 超时未答 → 降级暂存（9.11），答复不再路由进旧流程
+                degrade_pending(p)
+                STATE["pending"] = None  # 落入下方，按新输入正常处理
+            else:
+                return respond(text.strip())  # respond 内部读取并清理 pending
 
+        if pending_expired(STATE.get("pending")):  # 超时挂起先降级（9.11），再随新输入清除
+            degrade_pending(STATE["pending"])
         STATE["pending"] = None  # 主人发来新输入，未决裁决自动取消
         gone = temp.expire()
         if gone:
@@ -263,7 +289,7 @@ def make_handlers(cog: CognitiveModule, temp):
             STATE["topic"] = None
             STATE["pending"] = {"kind": "arbitrate", "text": text,
                                 "candidate_id": act["candidate_id"],
-                                "modality": modality}
+                                "modality": modality, "at": _t.time()}
             return say("唔，这个和我之前认识的「{}」有点像……它们是同一个吗？".format(
                            act["candidate_name"]),
                        actions=[{"label": "是同一个", "value": "yes"},
@@ -274,14 +300,15 @@ def make_handlers(cog: CognitiveModule, temp):
             STATE["topic"] = {"kind": "guess", "desc": text, "modality": modality,
                               "guess": act["guess"], "at": _t.time()}
             STATE["pending"] = {"kind": "guess", "text": text, "guess": act["guess"],
-                                "modality": modality}
+                                "modality": modality, "at": _t.time()}
             return say(f"嗯……让我猜猜，这是{act['guess']}？",
                        actions=[{"label": "对", "value": "yes"},
                                 {"label": "不对", "value": "no"}],
                        debug=f"action={kind} conf={act['confidence']}")
         STATE["topic"] = {"kind": "unknown", "desc": text,
                           "modality": modality, "at": _t.time()}
-        STATE["pending"] = {"kind": "naming", "text": text, "modality": modality}
+        STATE["pending"] = {"kind": "naming", "text": text, "modality": modality,
+                            "at": _t.time()}
         return say("唔……这个我确实不认识。你愿意教教我吗？"
                    "告诉我它叫什么、长什么样就好～",
                    debug=f"action={kind}")
@@ -303,7 +330,8 @@ def make_handlers(cog: CognitiveModule, temp):
             if value == "child" or re.search(r"子类|幼体|分支|小的", v):
                 STATE["pending"] = {"kind": "naming", "text": p["text"],
                                     "parent": p["candidate_id"],
-                                    "modality": p.get("modality", "text")}
+                                    "modality": p.get("modality", "text"),
+                                    "at": _t.time()}
                 return say("明白，那它是新的一支。给它起个名字，再简单说说特征吧。")
             if value == "yes" or (as_yes(v) and not as_no(v)):
                 STATE["pending"] = None
@@ -312,7 +340,8 @@ def make_handlers(cog: CognitiveModule, temp):
             if value == "no" or as_no(v):
                 STATE["pending"] = None
                 STATE["pending"] = {"kind": "naming", "text": p["text"],
-                                    "modality": p.get("modality", "text")}
+                                    "modality": p.get("modality", "text"),
+                                    "at": _t.time()}
                 return say("好，那它是另一个事物。告诉我它叫什么、长什么样吧。")
             STATE["pending"] = p  # 没听懂，再问一次
             return say("唔……你是说这是同一个，还是另一个呀？")
@@ -323,7 +352,7 @@ def make_handlers(cog: CognitiveModule, temp):
                 return say("啊，猜错了……那先不记，等你想教我的时候再说。")
             # 闸口 1：GUESS 分支确认回环（设计文档 4.2）
             STATE["pending"] = {"kind": "gate1", "text": p["text"], "guess": p["guess"],
-                                "modality": p.get("modality", "text")}
+                                "modality": p.get("modality", "text"), "at": _t.time()}
             return say(f"那这就是普通的{p['guess']}，对吗？还是它有特别之处？\n"
                        f"（直接回我：「普通」/ 特征描述 / 「叫<名字>」）")
 
