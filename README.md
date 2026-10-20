@@ -5,7 +5,22 @@
 > **perceive → judge by itself first → ask the master only when truly unsure → name together → remember → reuse & self-correct.**
 > （识别 → 基础模型先自主判断 → 真拿不准才求助主人 → 共同命名 → 记忆 → 复用与纠错）
 
-**voiceofsoul** · primitive version (v0.1.0) · Apache-2.0
+**voiceofsoul** · primitive version (v0.1.0) · Apache-2.0 · by Ricky Li ([github.com/rickyli2024](https://github.com/rickyli2024))
+
+---
+
+## Why this exists
+
+What if the model living on your own computer could learn about the world the way we do —
+noticing new things on its own, remembering the small moments of your daily life, growing
+alongside you like a real companion?
+
+Retraining a model from scratch is slow, complex, and expensive. So I kept asking myself:
+could a simple exoskeleton give *any* already-trained model basic cognition and self-learning —
+no retraining, no weights touched?
+
+That question became this project: **自认知进化** — cognitive evolution.
+（让本地模型伙伴像人一样认知、记忆、陪伴——不靠重训，靠外挂。）
 
 ---
 
