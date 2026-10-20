@@ -76,6 +76,11 @@ def _add_common(parser: argparse.ArgumentParser, suppress: bool = False) -> None
     parser.add_argument("--embedding-model",
                         default=argparse.SUPPRESS if suppress else None,
                         help="编码器（默认 embeddinggemma-2:latest）")
+    # 识别阈值：标定值见设计文档 §9，勿随意改动（与 server.py 保持一致）。
+    parser.add_argument("--mem-th", type=float, default=default(0.78),
+                        help="记忆库命中阈值（标定值 0.78）")
+    parser.add_argument("--base-th", type=float, default=default(0.51),
+                        help="基础模型猜测阈值（标定值 0.51）")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,7 +117,8 @@ def _build_session(args) -> Session:
     base = OllamaBaseModel(model=base_model, host=ollama)
     memory = MemoryModule(home / "memory.json", embedder)
     temp = TempMemory(home / "temp_memory.json", embedder)
-    cog = CognitiveModule(base, memory, embedder)
+    cog = CognitiveModule(base, memory, embedder,
+                          base_th=args.base_th, mem_th=args.mem_th)
     session = Session(cog, temp, home=home, state=state,
                       base_model=base_model, embedding_model=emb_model,
                       ollama_host=ollama)
