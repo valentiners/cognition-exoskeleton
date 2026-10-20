@@ -5,7 +5,7 @@
 > **perceive → judge by itself first → ask the master only when truly unsure → name together → remember → reuse & self-correct.**
 > （识别 → 基础模型先自主判断 → 真拿不准才求助主人 → 共同命名 → 记忆 → 复用与纠错）
 
-**voiceofsoul** · primitive version (v0.1.0) · Apache-2.0 · by Ricky Li ([github.com/rickyli2024](https://github.com/rickyli2024))
+**voiceofsoul** · primitive version (v0.1.0) · Apache-2.0 · by Ricky Li ([github.com/valentiners](https://github.com/valentiners))
 
 ---
 

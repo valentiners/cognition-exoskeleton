@@ -15,7 +15,7 @@ metadata:
         required: false
         description: Working directory for memory files (memory.json, temp_memory.json). Defaults to ~/.cognition-exoskeleton.
     emoji: "\U0001F9E0"
-    homepage: https://github.com/rickyli2024/cognition-exoskeleton
+    homepage: https://github.com/valentiners/cognition-exoskeleton
 ---
 
 # Cognition Exoskeleton (voiceofsoul)
