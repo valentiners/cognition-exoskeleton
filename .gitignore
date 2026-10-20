@@ -23,3 +23,4 @@ _test_dormant.py
 _test_dormant_e2e.py
 _test_degrade.py
 _test_exo_cli.py
+_test_openai_adapter.py

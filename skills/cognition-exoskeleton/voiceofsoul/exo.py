@@ -26,8 +26,8 @@ import sys
 import traceback
 from pathlib import Path
 
-from .adapters.ollama import (OllamaBaseModel, OllamaEmbedder,
-                              ensure_ollama)
+from .adapters import (ApiAuthError, ApiUnreachableError, OllamaEmbedder,
+                       ensure_ollama, ensure_openai, make_base_model)
 from .cognition import CognitiveModule
 from .memory import MemoryModule
 from .session import DEFAULT_HOME, Session, load_state
@@ -36,6 +36,8 @@ from .temp_memory import TempMemory
 DEFAULT_OLLAMA = "http://localhost:11434"
 DEFAULT_BASE_MODEL = "gemma4:latest"
 DEFAULT_EMBEDDING_MODEL = "embeddinggemma-2:latest"
+DEFAULT_BACKEND = "ollama"
+DEFAULT_API_BASE = "https://api.openai.com/v1"
 
 
 def _utf8_stdio():
@@ -64,7 +66,17 @@ def _add_common(parser: argparse.ArgumentParser, suppress: bool = False) -> None
     default = (lambda value: argparse.SUPPRESS) if suppress else (lambda value: value)
     parser.add_argument("--ollama", default=default(
         os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA)),
-        help="Ollama 服务地址（默认取 OLLAMA_HOST）")
+        help="Ollama 服务地址（默认取 OLLAMA_HOST；编码器始终走这里）")
+    parser.add_argument("--backend", choices=("ollama", "openai"),
+                        default=default(os.environ.get("COGSOUL_BACKEND",
+                                                       DEFAULT_BACKEND)),
+                        help="基础模型后端（默认 ollama；也可用 COGSOUL_BACKEND）")
+    parser.add_argument("--api-base", default=default(
+        os.environ.get("OPENAI_BASE_URL", DEFAULT_API_BASE)),
+        help="OpenAI-compatible base URL（包含 /v1；默认取 OPENAI_BASE_URL）")
+    parser.add_argument("--api-key",
+                        default=argparse.SUPPRESS if suppress else None,
+                        help="API key；强烈建议改用 OPENAI_API_KEY 环境变量，避免泄露")
     parser.add_argument("--home", default=default(
         os.environ.get("COGSOUL_HOME", str(DEFAULT_HOME))),
         help="工作目录（session.json / memory.json / temp_memory.json）")
@@ -104,7 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_session(args) -> Session:
+def _resolve_config(args) -> dict:
+    """Resolve env/flag/session defaults before any network probe."""
     home = Path(os.path.expanduser(args.home))
     state = load_state(home)
     ollama = args.ollama or state.get("ollama_host") or DEFAULT_OLLAMA
@@ -112,9 +125,25 @@ def _build_session(args) -> Session:
     base_model = args.base_model or state.get("base_model") or DEFAULT_BASE_MODEL
     emb_model = (args.embedding_model or state.get("embedding_model")
                  or DEFAULT_EMBEDDING_MODEL)
+    backend = (args.backend or os.environ.get("COGSOUL_BACKEND")
+               or DEFAULT_BACKEND).strip().lower()
+    api_base = (args.api_base or os.environ.get("OPENAI_BASE_URL")
+                or DEFAULT_API_BASE)
+    api_key = args.api_key or os.environ.get("OPENAI_API_KEY")
+    return {"home": home, "state": state, "ollama": ollama,
+            "base_model": base_model, "embedding_model": emb_model,
+            "backend": backend, "api_base": api_base, "api_key": api_key}
+
+
+def _build_session(args, cfg: dict | None = None) -> Session:
+    cfg = cfg or _resolve_config(args)
+    home, state = cfg["home"], cfg["state"]
+    ollama, base_model = cfg["ollama"], cfg["base_model"]
+    emb_model = cfg["embedding_model"]
 
     embedder = OllamaEmbedder(model=emb_model, host=ollama)
-    base = OllamaBaseModel(model=base_model, host=ollama)
+    base = make_base_model(cfg["backend"], model=base_model, host=ollama,
+                           api_base=cfg["api_base"], api_key=cfg["api_key"])
     memory = MemoryModule(home / "memory.json", embedder)
     temp = TempMemory(home / "temp_memory.json", embedder)
     cog = CognitiveModule(base, memory, embedder,
@@ -145,16 +174,30 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "chat" and args.image and not Path(args.image).is_file():
         parser.error(f"图片文件不存在：{args.image}")
 
+    cfg = _resolve_config(args)
+    if cfg["backend"] == "openai" and not cfg["api_key"]:
+        parser.error("--backend openai 需要 OPENAI_API_KEY 或 --api-key")
+
     try:
         if args.command in ("chat", "respond"):
-            # 先探测 Ollama：不可达时立刻退出，绝不落任何记忆。
+            # 编码器始终在本地 Ollama：先探测它，再探测云端后端。
             try:
-                ensure_ollama(args.ollama)
+                ensure_ollama(cfg["ollama"])
             except OSError as exc:
                 _print_error("ollama_unreachable", str(exc))
                 return 2
+            if cfg["backend"] == "openai":
+                try:
+                    ensure_openai(cfg["api_base"], cfg["api_key"],
+                                  cfg["base_model"])
+                except ApiAuthError as exc:
+                    _print_error("api_auth", str(exc))
+                    return 2
+                except ApiUnreachableError as exc:
+                    _print_error("api_unreachable", str(exc))
+                    return 2
 
-        session = _build_session(args)
+        session = _build_session(args, cfg)
 
         if args.command == "chat":
             image_b64 = None
@@ -167,6 +210,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _print_json(session.stats())
         return 0
+    except ApiAuthError as exc:
+        _print_error("api_auth", str(exc))
+        return 2
+    except ApiUnreachableError as exc:
+        _print_error("api_unreachable", str(exc))
+        return 2
     except OSError as exc:
         # 预检之后 Ollama 掉线，或本地文件系统错误；按“不可达”路径返回 2。
         _print_error("ollama_unreachable", str(exc))

@@ -19,8 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from voiceofsoul import CognitiveModule, MemoryModule
-from voiceofsoul.adapters import OllamaBaseModel, OllamaEmbedder
-from voiceofsoul.adapters.ollama import list_models
+from voiceofsoul.adapters import (OllamaEmbedder, list_models,
+                                  make_base_model)
 from voiceofsoul.session import DEFAULT_HOME, Session
 from voiceofsoul.temp_memory import TempMemory
 
@@ -98,6 +98,13 @@ def main():
     ap.add_argument("--base-model", default="gemma4:latest")
     ap.add_argument("--embedding-model", default="embeddinggemma-2:latest")
     ap.add_argument("--ollama", default="http://localhost:11434")
+    ap.add_argument("--backend", choices=("ollama", "openai"),
+                    default=os.environ.get("COGSOUL_BACKEND", "ollama"))
+    ap.add_argument("--api-base", default=os.environ.get(
+        "OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        help="OpenAI-compatible base URL（包含 /v1）")
+    ap.add_argument("--api-key", default=None,
+                    help="API key；建议用 OPENAI_API_KEY 环境变量，避免泄露")
     ap.add_argument("--home", default=os.environ.get("COGSOUL_HOME", str(DEFAULT_HOME)),
                     help="会话状态目录（session.json）")
     ap.add_argument("--memory", default="memory.json")
@@ -109,8 +116,15 @@ def main():
                     help="基础模型猜测阈值")
     args = ap.parse_args()
 
+    backend = (args.backend or "ollama").strip().lower()
+    api_base = args.api_base or "https://api.openai.com/v1"
+    api_key = args.api_key or os.environ.get("OPENAI_API_KEY")
+    if backend == "openai" and not api_key:
+        ap.error("--backend openai 需要 OPENAI_API_KEY 或 --api-key")
+
     embedder = OllamaEmbedder(model=args.embedding_model, host=args.ollama)
-    base = OllamaBaseModel(model=args.base_model, host=args.ollama)
+    base = make_base_model(backend, model=args.base_model, host=args.ollama,
+                           api_base=api_base, api_key=api_key)
     memory = MemoryModule(args.memory, embedder)
     temp = TempMemory(args.temp_memory, embedder)
     cog = CognitiveModule(base, memory, embedder,
@@ -127,15 +141,37 @@ def main():
 
     # 模型列表与热切换（HTTP 层只转发，编排在 Session）
     def models_handler():
-        d = list_models(args.ollama)
+        try:
+            if backend == "ollama":
+                d = list_models(args.ollama)
+            else:
+                d = {"base": [],
+                     "embedding": list_models(args.ollama).get("embedding", [])}
+        except OSError:
+            d = {"base": [], "embedding": []}
         d["current"] = {"base": session.state["base_model"],
-                        "embedding": session.state["embedding_model"]}
+                        "embedding": session.state["embedding_model"],
+                        "backend": backend}
         return d
 
     def switch_handler(payload: dict):
         base_name = (payload.get("base") or "").strip() or None
         emb = (payload.get("embedding") or "").strip() or None
         try:
+            if backend == "openai":
+                msgs = []
+                if base_name:
+                    cog.base = make_base_model(
+                        "openai", model=base_name, host=args.ollama,
+                        api_base=api_base, api_key=api_key)
+                    session.state["base_model"] = base_name
+                    msgs.append(f"基础模型 → {base_name}")
+                if emb:
+                    msgs.append(session.switch_models(None, emb))
+                if msgs:
+                    session._save()
+                return {"ok": True,
+                        "msg": "；".join(msgs) if msgs else "模型未变化"}
             msg = session.switch_models(base_name, emb)
             return {"ok": True, "msg": msg}
         except OSError as e:
@@ -144,7 +180,9 @@ def main():
     Handler.models_fn = staticmethod(models_handler)
     Handler.switch_fn = staticmethod(switch_handler)
     print(f"自认知外挂测试服务已启动： http://localhost:{args.port}")
-    print(f"  基础模型: {args.base_model} | 编码器: {args.embedding_model}")
+    print(f"  后端: {backend} | 基础模型: {args.base_model} | 编码器: {args.embedding_model}")
+    if backend == "openai":
+        print(f"  API: {api_base}")
     print("按 Ctrl+C 停止")
     try:
         server.serve_forever()

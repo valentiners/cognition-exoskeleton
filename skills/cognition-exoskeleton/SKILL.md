@@ -13,6 +13,15 @@ metadata:
       - name: COGSOUL_HOME
         required: false
         description: Working directory for memory files (memory.json, temp_memory.json). Defaults to ~/.cognition-exoskeleton.
+      - name: COGSOUL_BACKEND
+        required: false
+        description: Base-model backend; ollama (default) or openai.
+      - name: OPENAI_BASE_URL
+        required: false
+        description: OpenAI-compatible base URL including /v1. Defaults to https://api.openai.com/v1.
+      - name: OPENAI_API_KEY
+        required: false
+        description: API key for the OpenAI-compatible backend. Prefer this env var over --api-key.
     emoji: "\U0001F9E0"
     homepage: https://github.com/valentiners/cognition-exoskeleton
 ---
@@ -112,6 +121,32 @@ By Ricky Li. License: MIT-0 on ClawHub; the source repository is Apache-2.0.
    ```
 
    Returns entry counts, hit counts, dormancy flags, and temporary records.
+
+## Cloud backends
+
+The base model can run on any OpenAI-compatible chat-completions endpoint; the
+embedder stays local (`embeddinggemma-2` on Ollama), so the calibrated
+thresholds in `references/thresholds.md` remain valid.
+
+```bash
+# CLI flags go before the subcommand
+python -m voiceofsoul.exo --backend openai \
+  --api-base https://api.deepseek.com/v1 \
+  --base-model deepseek-chat \
+  chat --text "..."
+
+# server.py accepts the same flags
+python server.py --backend openai --api-base https://api.deepseek.com/v1 \
+  --base-model deepseek-chat
+```
+
+Environment variables: `COGSOUL_BACKEND=openai`, `OPENAI_BASE_URL`,
+`OPENAI_API_KEY`. `--api-key` exists for convenience, but the env var is
+strongly recommended so the key never appears in a process list. `OLLAMA_HOST`
+is still required for the local embedder.
+
+Error kinds: `api_unreachable` (exit 2), `api_auth` (exit 2); HTTP 429/5xx
+keep the normal unexpected-error path (exit 1).
 
 ## Memory rules (summarized)
 
