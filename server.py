@@ -116,24 +116,37 @@ def make_handlers(cog: CognitiveModule, temp):
             return say(promote_temp(p["temp_id"], name=text.strip()))
 
         # 0b. 未决流程的自由文本应答：主人的一句话就是回答，不用按钮
+        # （纯问句除外——那是新问题，不是回答，交给下方问答/识别流程）
         p = STATE.get("pending")
-        if p and not image_b64 and text.strip():
+        if p and not image_b64 and text.strip() and not QA_PATTERN.search(text):
             if re.search(r"^(算了|取消|没事了)$", text.strip()):
                 STATE["pending"] = None
                 STATE["topic"] = None
                 return say("好～那就当没这回事。")
-            STATE["pending"] = None  # 交给 respond 处理；它内部会重建需要的 pending
-            return respond(text.strip())
+            return respond(text.strip())  # respond 内部读取并清理 pending
 
         STATE["pending"] = None  # 主人发来新输入，未决裁决自动取消
         gone = temp.expire()
         if gone:
             print(f"[临时记忆] 遗忘了 {len(gone)} 件久未提起的事：{', '.join(gone)}")
 
-        # 常识问答直通：纯问题不进识别/记忆流程，基础模型能答就直接答
-        # （设计文档 4.1 主规则：能被基础模型压缩知识完整覆盖 → 不建条目）
+        # 常识问答直通：纯问题不进识别/记忆流程，基础模型能答就直接答。
+        # 有新鲜话题时带上上下文——"他是谁？"这类指代问题脱离语境会答崩（实测教训）。
         if not image_b64 and QA_PATTERN.search(text):
-            ans = getattr(cog.base, "answer_question", lambda _: None)(text)
+            topic = STATE.get("topic")
+            ctx = ""
+            if fresh_topic(topic):
+                ctx = topic.get("desc", "")
+                if topic.get("kind") == "recognized" and topic.get("entry_id"):
+                    e = cog.memory.entries.get(topic["entry_id"])
+                    if e:
+                        ctx = f"它叫「{e['name']}」。" + ctx
+                elif topic.get("temp_id"):
+                    rec = temp.get(topic["temp_id"])
+                    if rec and rec.get("features"):
+                        extra = "；".join(f"{k}：{v}" for k, v in rec["features"].items())
+                        ctx = f"{ctx}；{extra}"
+            ans = getattr(cog.base, "answer_question", lambda q, c="": None)(text, ctx)
             if ans:
                 return say(ans, debug="action=QA_PASS（基础模型覆盖，不走记忆流程）")
 
@@ -160,15 +173,16 @@ def make_handlers(cog: CognitiveModule, temp):
                     topic["temp_id"] = tid
                 temp.update_features(tid, attr, value)
                 if attr == "名字":
-                    return say(f"哦～原来叫「{value}」呀，我悄悄记下了。")
-                return say(f"嗯嗯，{attr}是「{value}」，我悄悄记下了。")
+                    return say(f"哦，他叫{value}呀，我记下了。")
+                return say(f"嗯嗯，{attr}是「{value}」，我记下了。")
         elif topic and not fresh_topic(topic):
             STATE["topic"] = None  # 旧话题自然冷却
 
         # 感知通道 A：图像先经视觉模型转为统一描述，再走同一条比对流程
         desc = None
         if image_b64:
-            desc = cog.base.perceive_image(image_b64, text)
+            hint = text if text and not QA_PATTERN.search(text) else ""
+            desc = cog.base.perceive_image(image_b64, hint)
             if not desc:
                 return say("唔，这张图我没看明白……能换一张，或者用文字告诉我你看到的是什么吗？")
             text = f"{text}，{desc}" if text else desc
@@ -179,20 +193,27 @@ def make_handlers(cog: CognitiveModule, temp):
         if trec:
             tid, score = trec
             rec = temp.get(tid)
-            promoted = temp.touch(tid)
-            STATE["topic"] = {"kind": "temp", "temp_id": tid, "desc": rec["desc"],
-                              "modality": rec.get("modality", "text"), "at": _t.time()}
-            if promoted:  # 七天内不同日期出现≥3次 → 自动晋升永久记忆
+            # 图像暂存的个体同样要过同一性复核，防同类不同个体误命中（与永久条目同规则）
+            if rec.get("modality", "text") == "image":
+                judge = getattr(cog.base, "judge_same", lambda a, b: None)(text, rec["desc"])
+                if judge is False:
+                    trec = None  # 不是同一人 → 按新事物继续
+                # judge None → 拿不准，按命中处理但不当场叫名字
+            if trec:
+                promoted = temp.touch(tid)
+                STATE["topic"] = {"kind": "temp", "temp_id": tid, "desc": rec["desc"],
+                                  "modality": rec.get("modality", "text"), "at": _t.time()}
+                if promoted:  # 七天内不同日期出现≥3次 → 自动晋升永久记忆
+                    nm = rec["features"].get("名字")
+                    msg = promote_temp(tid, name=nm)
+                    lead = (f"咦，这不就是{'「' + nm + '」' if nm else '之前聊过的那个'}嘛！"
+                            f"它这几天老是出现，我就把它正式记住了——")
+                    return say(lead + msg,
+                               debug=f"action=TEMP_PROMOTE sim={score}")
                 nm = rec["features"].get("名字")
-                msg = promote_temp(tid, name=nm)
-                lead = (f"咦，这不就是{'「' + nm + '」' if nm else '之前聊过的那个'}嘛！"
-                        f"它这几天老是出现，我就把它正式记住了——")
-                return say(lead + msg,
-                           debug=f"action=TEMP_PROMOTE sim={score}")
-            nm = rec["features"].get("名字")
-            greet = (f"这不是{nm}嘛，我记得的呀～" if nm
-                     else "这个我记得，我们之前聊过的～")
-            return say(greet, debug=f"action=TEMP_HIT days={len(rec['days'])} sim={score}")
+                greet = (f"这不是{nm}嘛，我记得的呀～" if nm
+                         else "这个我记得，我们之前聊过的～")
+                return say(greet, debug=f"action=TEMP_HIT days={len(rec['days'])} sim={score}")
 
         act = cog.perceive(text)
         kind = act["action"]
@@ -205,15 +226,12 @@ def make_handlers(cog: CognitiveModule, temp):
             STATE["topic"] = {"kind": "direct", "desc": text,
                               "modality": modality, "at": _t.time()}
             if desc:  # 图片输入：先讲"我看到一张图片"，再自然描述
-                return say(f"我看到一张图片——{desc}\n"
-                           f"这类事物我本来就认识，就不占用我的长期记忆啦。"
-                           f"不过，要是它对你有什么特别的意义，悄悄告诉我它的名字，"
-                           f"我会认真记住的。",
-                           debug=f"action={kind} conf={act['confidence']}")
-            return say(f"这个我本来就认识：{act['guess']}～\n"
-                       f"如果它对你有特别的意义，告诉我它的名字和特征，"
-                       f"我会把它变成长期记忆。",
-                       debug=f"action={kind} conf={act['confidence']}")
+                return say(f"我看到一张图片——{desc}",
+                           debug=f"action={kind} conf={act['confidence']}；"
+                                 f"常识直通。若主人随后给出名字，走特征供给→记忆流程")
+            return say(f"哦，这是{act['guess']}呀～",
+                       debug=f"action={kind} conf={act['confidence']}；"
+                             f"常识直通。若主人随后给出名字，走特征供给→记忆流程")
         if kind == "ARBITRATE":
             STATE["topic"] = None
             STATE["pending"] = {"kind": "arbitrate", "text": text,

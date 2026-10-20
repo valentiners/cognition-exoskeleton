@@ -13,3 +13,4 @@ _test_lucy.py
 demo_memory.json
 _test_identity.py
 .server.lock
+_test_context.py

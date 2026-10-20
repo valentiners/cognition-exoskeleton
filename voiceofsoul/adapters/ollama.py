@@ -160,6 +160,11 @@ class OllamaBaseModel:
         if m and "无关" not in ans:
             attr = m.group(1).strip().strip("「」")
             val = m.group(2).strip().strip("「」")
+            # 模型偶尔套娃输出"属性: 名字: 小明"——剥掉外层泛化属性名再拆一次
+            if attr in ("属性", "特征", "信息") and re.search(r"[:：]", val):
+                m2 = re.match(r"^([^:：]{1,12})[:：](.+)$", val)
+                if m2:
+                    attr, val = m2.group(1).strip().strip("「」"), m2.group(2).strip().strip("「」")
             if attr.lower() in ("名字", "name", "称呼", "姓名"):
                 attr = "名字"
             if attr and val:
@@ -186,16 +191,21 @@ class OllamaBaseModel:
         r = self.classify_followup(context, utterance)
         return (r[1], r[2]) if r[0] == "feature" else None
 
-    def answer_question(self, question: str) -> str | None:
+    def answer_question(self, question: str, context: str = "") -> str | None:
         """常识问答直通：基础模型能覆盖的知识直接回答，不进入记忆流程。
 
         对应设计文档 4.1 主规则——事务能被基础模型压缩知识完整覆盖 → 不建条目。
+        context 为对话中刚聊过的事物（含已缓存特征）——"他是谁？"这类指代问题
+        没有上下文会答崩（实测 gemma4 会反过来索要上下文，聊天断裂）。
         """
         prompt = (
             "请用两三句话简洁准确地回答下面的问题。如果这是你的常识范围内的知识，"
             "直接回答；只有当你确实完全不掌握相关知识时才回答「不了解」。\n"
             f"问题：{question}"
         )
+        if context:
+            prompt += (f"\n背景：主人这句话问的很可能是刚聊过的这个事物——{context}"
+                       f"\n请结合背景作答；如果问题与背景无关，就按常识直接回答。")
         try:
             ans = self._generate(prompt, timeout=180)
         except OSError:
@@ -236,7 +246,7 @@ class OllamaBaseModel:
             "- 动物：毛色与花纹、体型、耳/尾/眼的形态、显著标记\n"
             "- 物品：材质、颜色、形状、磨损或独特之处\n"
             "先一句话说类别（如「一位年轻女性」），再罗列上述区分性细节。"
-            "只输出描述本身，不要输出寒暄、解释或任何其他文字。"
+            "只输出描述本身：不要寒暄、不要解释，也不要回答主人附带的任何问题。"
         )
         if hint:
             prompt += f"\n主人的补充说明：{hint}"
