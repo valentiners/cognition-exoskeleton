@@ -73,11 +73,14 @@ class MemoryModule:
         return {}
 
     def _persist(self):
-        self.path.write_text(
+        # 原子写：任何一步失败都不会留下半截 JSON（任务书 §5）。
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(
             json.dumps({"entries": self.entries, "patches": self.patches},
                        ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        tmp.replace(self.path)
 
     # ---------- 主条目 ----------
     def save(self, entry: dict) -> str:

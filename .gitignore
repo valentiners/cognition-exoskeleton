@@ -2,6 +2,11 @@ __pycache__/
 *.pyc
 memory.json
 temp_memory.json
+session.json
+session.json.tmp
+session.json.corrupt-*
+memory.json.tmp
+temp_memory.json.tmp
 .venv/
 dist/
 build/
@@ -17,3 +22,4 @@ _test_context.py
 _test_dormant.py
 _test_dormant_e2e.py
 _test_degrade.py
+_test_exo_cli.py

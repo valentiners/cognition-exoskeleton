@@ -1,7 +1,6 @@
 ---
 name: cognition-exoskeleton
 description: Give any LLM a self-cognition exoskeleton — perception-first recognition, conversational memory arbitration, two-layer memory (temporary/permanent) with 7-day promotion, dormancy and "think again" recall. No fine-tuning, model-agnostic, stdlib-only Python.
-version: 0.1.0
 metadata:
   openclaw:
     requires:
@@ -73,6 +72,9 @@ By Ricky Li. License: MIT-0 on ClawHub; the source repository is Apache-2.0.
 7. Calibrated thresholds are not to be tuned casually (see `references/thresholds.md`).
 
 ## How it works (step by step)
+
+> Runtime layout: this skill folder bundles the zero-dependency `voiceofsoul/` package.
+> Run the commands below from the skill folder, or put that folder on `PYTHONPATH`.
 
 1. On each entity-bearing input, call the perception pipeline first:
 

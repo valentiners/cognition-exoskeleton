@@ -31,9 +31,14 @@ class TempMemory:
             self._n = d.get("counter", 0)
 
     def _persist(self):
-        json.dump({"counter": self._n, "records": self.records},
-                  open(self.path, "w", encoding="utf-8"),
-                  ensure_ascii=False, indent=2)
+        # 原子写：任何一步失败都不会留下半截 JSON（任务书 §5）。
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(
+            json.dumps({"counter": self._n, "records": self.records},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(self.path)
 
     # ---------- 生命周期 ----------
     def expire(self) -> list[str]:

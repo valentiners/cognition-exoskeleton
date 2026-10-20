@@ -23,6 +23,16 @@ def _post(host: str, path: str, payload: dict, timeout: float = 120.0) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _get_json(host: str, path: str, timeout: float = 30.0) -> dict:
+    with urllib.request.urlopen(host.rstrip("/") + path, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def ensure_ollama(host: str, timeout: float = 5.0) -> None:
+    """探测 Ollama 是否可达；不可达时抛出 OSError（CLI 映射为退出码 2）。"""
+    _get_json(host, "/api/tags", timeout=timeout)
+
+
 class OllamaEmbedder:
     """独立外部编码器（经由 Ollama 的 embedding 模型，如 mxbai-embed-large）。"""
 
@@ -41,6 +51,35 @@ class OllamaEmbedder:
     @staticmethod
     def cosine(a: list[float], b: list[float]) -> float:
         return sum(x * y for x, y in zip(a, b))
+
+
+# Ollama /api/tags 只给名单，模型分类要靠 /api/show 的 capabilities 字段：
+# 含 "embedding" → embedding 模型；含 "completion" → 基础模型。结果缓存。
+_MODEL_CACHE: dict[str, list] = {}
+
+
+def list_models(host: str) -> dict:
+    """列出可用基础模型 / 编码器（供 HTTP 层的模型下拉与 CLI 诊断）。"""
+    bases, embeds = [], []
+    for m in _get_json(host, "/api/tags").get("models", []):
+        name = m["name"]
+        caps = _MODEL_CACHE.get(name)
+        if caps is None:
+            try:
+                req = urllib.request.Request(
+                    host.rstrip("/") + "/api/show",
+                    data=json.dumps({"name": name}).encode(),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    caps = json.loads(resp.read().decode()).get("capabilities", [])
+            except OSError:
+                caps = []
+            _MODEL_CACHE[name] = caps
+        if "embedding" in caps:
+            embeds.append(name)
+        elif "completion" in caps:
+            bases.append(name)
+    return {"base": sorted(bases), "embedding": sorted(embeds)}
 
 
 class OllamaBaseModel:
