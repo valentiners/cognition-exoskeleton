@@ -78,7 +78,7 @@ python demo.py
 
 ## Design doc
 
-The full design lives in [docs/外挂认知模块与记忆模块方案_v3.4.md](docs/外挂认知模块与记忆模块方案_v3.4.md) (Chinese) — the project's design "constitution". **Chapter 9 (v3.4) is the authoritative record of the browser-tested mechanisms**: base-model-first perception, conversational interaction without buttons, two-layer memory with the 7-day rule, feature-supply pipeline, calibrated thresholds, and the full change log.
+The full design lives in [docs/外挂认知模块与记忆模块方案_v4.0.md](docs/外挂认知模块与记忆模块方案_v4.0.md) (bilingual Chinese/English) — the project's design "constitution". It consolidates everything through v3.4's browser-tested iterations: base-model-first perception, conversational interaction without buttons, two-layer memory with the 7-day rule, dormancy & layered retrieval, arbitration-timeout degradation, the video perception interface, and the OpenClaw skill path. (v3.4 and earlier versions are archived in the repo history.)
 
 ## Roadmap
 
