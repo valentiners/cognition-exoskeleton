@@ -167,7 +167,7 @@ Nothing in the design §9 calibrated-parameter table changes. New parameters arr
 5. `skills/` bundled copy synced (line-ending deltas only); `SKILL.md` valid per its
    schema check; `start.bat` untouched and still exclusive.
 
-## 8. Open questions — proposed defaults, awaiting Kimi/Ricky confirmation
+## 8. Open questions — RESOLVED by Kimi/Ricky（已拍板，按此实现）
 
 1. T1 points duplicate the existing pending-naming flow; we **link** them (queue tracks,
    pipeline unchanged) rather than replace the pending mechanism — proposed;
