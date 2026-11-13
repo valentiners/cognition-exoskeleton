@@ -45,7 +45,9 @@ DEFAULT_HOME = Path.home() / ".cognition-exoskeleton"
 
 # ---------- 好奇心（设计 §4.6~§4.9）----------
 # 占位符，待 §6.5 标定（任务书 §4）：T2 低置信猜测的触发阈值。
-CURIOUS_TH = 0.35
+# 2026-11-14 主人拍板选 A：0.35 是死路径（GUESS 的置信度只会 ≥ base_th=0.51
+# 或 = 记忆命中分 ≥ mem_th=0.70），抬到 GUESS 有效区间 (0.51, 0.70) 内的 0.60。
+CURIOUS_TH = 0.60
 AUTONOMY_MODES = ("quiet", "normal", "eager")
 DEFAULT_QUIET_HOURS = "21:00-08:00"   # 产品默认，不是标定阈值
 # 主人明确叫停 → 该好奇点静音 7 天（复用临时记忆的到期哲学）
