@@ -30,7 +30,7 @@ from .adapters import (ApiAuthError, ApiUnreachableError, OllamaEmbedder,
                        ensure_ollama, ensure_openai, make_base_model)
 from .cognition import CognitiveModule
 from .memory import MemoryModule
-from .session import DEFAULT_HOME, Session, load_state
+from .session import (AUTONOMY_MODES, DEFAULT_HOME, Session, load_state)
 from .temp_memory import TempMemory
 
 DEFAULT_OLLAMA = "http://localhost:11434"
@@ -112,6 +112,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p_resp, suppress=True)
     p_resp.add_argument("--text", required=True, help="主人的自由文本回答")
 
+    p_cur = sub.add_parser(
+        "curiosity",
+        help="好奇心队列：list（看看攒了什么）/ mute <qid>（静音）/ "
+             "mode <quiet|normal|eager>（自主额度）")
+    _add_common(p_cur, suppress=True)
+    p_cur.add_argument("action", choices=("list", "mute", "mode"))
+    p_cur.add_argument("target", nargs="?", default=None,
+                       help="mute 的好奇点 id，或 mode 的取值")
+
     sub.add_parser("stats", help="输出与 GET /api/stats 相同的统计 JSON")
     return parser
 
@@ -164,6 +173,36 @@ def _build_session(args, cfg: dict | None = None) -> Session:
     return session
 
 
+def _run_curiosity(session: Session, args) -> int:
+    """好奇心子命令：list / mute <qid> / mode <quiet|normal|eager>。"""
+    if args.action == "mode":
+        mode = session.set_autonomy(args.target)
+        label = {"quiet": "安静（只攒批）",
+                 "normal": "正常（轻问 + 攒批）",
+                 "eager": "好学（轻问一轮两次）"}[mode]
+        _print_json({"say": f"好，那我以后好奇的时候就按「{label}」来。",
+                     "actions": [], "debug": f"autonomy={mode}"})
+        return 0
+    if args.action == "mute":
+        item = session.curiosity.get(args.target)
+        if not item:
+            _print_error("curiosity_not_found", f"没有这条好奇点：{args.target}")
+            return 2
+        session.curiosity.mark(args.target, "muted")
+        _print_json({"say": "好，这个我先不问了，过阵子再说～",
+                     "actions": [], "debug": f"muted={args.target}"})
+        return 0
+    items = session.curiosity.list()
+    st = session.curiosity.stats()
+    if items:
+        say = f"我这儿一共记着 {st['total']} 个好奇点，{st['open']} 个还在等答案。"
+    else:
+        say = "我最近没什么特别好奇的事～"
+    _print_json({"say": say, "actions": [],
+                 "debug": json.dumps(items, ensure_ascii=False)})
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _utf8_stdio()
     parser = build_parser()
@@ -173,6 +212,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("chat 需要 --text 或 --image")
     if args.command == "chat" and args.image and not Path(args.image).is_file():
         parser.error(f"图片文件不存在：{args.image}")
+    if args.command == "curiosity":
+        if args.action in ("mute", "mode") and not args.target:
+            parser.error(f"curiosity {args.action} 需要参数"
+                         + ("（qid）" if args.action == "mute"
+                            else "（quiet|normal|eager）"))
+        if args.action == "mode" and args.target not in AUTONOMY_MODES:
+            parser.error("mode 只能是 quiet / normal / eager")
 
     cfg = _resolve_config(args)
     if cfg["backend"] == "openai" and not cfg["api_key"]:
@@ -207,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(session.chat(args.text.strip(), image_b64))
         elif args.command == "respond":
             _print_json(session.respond(args.text.strip()))
+        elif args.command == "curiosity":
+            return _run_curiosity(session, args)
         else:
             _print_json(session.stats())
         return 0
