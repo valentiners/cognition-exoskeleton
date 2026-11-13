@@ -7,6 +7,8 @@ session.json.tmp
 session.json.corrupt-*
 memory.json.tmp
 temp_memory.json.tmp
+curiosity.json
+curiosity.json.tmp
 .venv/
 dist/
 build/
@@ -24,3 +26,6 @@ _test_dormant_e2e.py
 _test_degrade.py
 _test_exo_cli.py
 _test_openai_adapter.py
+_test_curiosity.py
+_test_dormant_memory.json
+_test_dormant_temp.json
