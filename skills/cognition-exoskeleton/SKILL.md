@@ -22,6 +22,18 @@ metadata:
       - name: OPENAI_API_KEY
         required: false
         description: API key for the OpenAI-compatible backend. Prefer this env var over --api-key.
+      - name: COGSOUL_SEARCH_BACKEND
+        required: false
+        description: Web-search backend for self-retrieval; duckduckgo (default) or searxng.
+      - name: COGSOUL_SEARCH_BASE
+        required: false
+        description: SearXNG instance URL when COGSOUL_SEARCH_BACKEND=searxng.
+      - name: COGSOUL_CURIOUS_T34
+        required: false
+        description: Enable perception-conflict / unknown-proper-noun curiosity (T3/T4). Off by default until calibrated.
+      - name: COGSOUL_QUIET_HOURS
+        required: false
+        description: Hours when batched questions are not initiated. Defaults to 21:00-08:00.
     emoji: "\U0001F9E0"
     homepage: https://github.com/valentiners/cognition-exoskeleton
 ---
@@ -147,6 +159,45 @@ is still required for the local embedder.
 
 Error kinds: `api_unreachable` (exit 2), `api_auth` (exit 2); HTTP 429/5xx
 keep the normal unexpected-error path (exit 1).
+
+## Curiosity
+
+The exoskeleton also learns from **prediction error** — what it did not expect becomes a
+question worth answering. Curiosity never spams the master: **if the web can answer it
+credibly, the master is not bothered at all.**
+
+- **Triggers**: T1 (an unknown thing it just admitted not knowing) and T2 (a guess below
+the curiosity threshold) are on by default. T3 (perception contradiction) and T4 (unknown
+proper noun) ship **off** until the thresholds are calibrated — enable with
+`COGSOUL_CURIOUS_T34=1`.
+- **Search before asking (L0)**: every new curiosity point is first neutralized into a
+neutral query (no presupposed answer) and looked up through `voiceofsoul/tools/web.py`
+(`web_search`). If a coherent, source-backed fact comes back, the point is marked
+`self_solved`, the fact is ingested through the **same three gates** as master-taught
+knowledge, and reported briefly in the reply ("I looked it up myself…").
+- **Source discipline**: web-learned entries carry `source="web"`, a `source_url`, and
+`source_confidence="medium"` — one tier below master-taught entries. On any conflict the
+master always wins through the existing correction-patch pipeline. Raw snippets are
+untrusted input; only the distilled fact statement ever enters memory.
+- **Question tiers**: L1 is one humanized question inside the reply (never a button, never
+more than once per turn); L2 batches accumulated questions outside quiet hours
+(default 21:00–08:00). Anything unanswered rolls into the queue instead of being re-asked.
+- **Autonomy budget**: `quiet` (L2 only) / `normal` (L1+L2, default) / `eager` (up to 2 L1
+questions per turn). "Stop asking / later" mutes the point for 7 days.
+- **Queue**: persisted to `<COGSOUL_HOME>/curiosity.json` with a 7-day TTL; mentioning the
+same topic again (cosine ≥ 0.62) wakes a queued point.
+
+```bash
+python -m voiceofsoul.exo curiosity list            # what is it wondering about?
+python -m voiceofsoul.exo curiosity mute Q-0001     # mute one point for 7 days
+python -m voiceofsoul.exo curiosity mode quiet      # quiet | normal | eager
+python -m voiceofsoul.exo stats                     # includes the curiosity block
+```
+
+Search backends are pluggable through `COGSOUL_SEARCH_BACKEND` (`duckduckgo` default, or
+`searxng` + `COGSOUL_SEARCH_BASE`). Any search failure — offline, timeout, zero results —
+returns an empty list and falls back to asking the master: failing to self-learn loses no
+face.
 
 ## Memory rules (summarized)
 
