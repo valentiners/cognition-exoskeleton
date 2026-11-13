@@ -164,12 +164,28 @@ class CognitiveModule:
     def learn_entry(self, name: str, description: str, chat_log: list | None = None,
                     ai_proposed: str | None = None,
                     relation: dict | None = None,
-                    source_modality: str = "text") -> str:
+                    source_modality: str = "text",
+                    source: str = "master",
+                    source_url: str | None = None) -> str:
         """专名/私人知识：建完整主条目（调用前已过三道闸口）。
 
         source_modality 记录感知通道：图像学来的个体（如 Lucy/豆豆）在识别时
         必须经同一性复核，防止同类不同个体被向量误命中（见 perceive 第 1 步）。
+
+        source / source_url 记录知识来源（设计 §4.9 来源纪律）：
+        - "master"（默认）：主人亲授，置信档 high；
+        - "web"：自主检索自学，附出处 URL，置信档 medium（比亲授低一档），
+          与主人输入矛盾时主人永远优先（走既有纠错补丁管线）。
         """
+        provenance = {
+            "source_modality": source_modality,
+            "extraction_channel": "B",
+            "completeness": 1.0,
+            "source": source,
+            "source_confidence": "medium" if source == "web" else "high",
+        }
+        if source_url:
+            provenance["source_url"] = source_url
         return self.memory.save({
             "name": name,
             "features": {
@@ -177,9 +193,7 @@ class CognitiveModule:
                 "embedding": self.embedder.embed(description),
             },
             "embedding_meta": {"model": self.embedder.model_tag},
-            "provenance": {"source_modality": source_modality,
-                           "extraction_channel": "B",
-                           "completeness": 1.0},
+            "provenance": provenance,
             "relation": relation or {"type": None, "parent": None},
             "formation": {
                 "method": "多维度特征分析",
