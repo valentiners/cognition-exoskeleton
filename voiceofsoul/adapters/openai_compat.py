@@ -132,7 +132,7 @@ class OpenAICompatBaseModel:
     def _text(self, prompt: str, timeout: float = 120.0) -> str:
         return self._chat(prompt, timeout=timeout)
 
-    # ---------- 9 probe methods (same contract as OllamaBaseModel) ----------
+    # ---------- 10 probe methods (same contract as OllamaBaseModel) ----------
     def infer_confidence(self, text: str) -> float:
         raw = self._text(prompts.confidence_prompt(text))
         return prompts.parse_confidence(raw)
@@ -164,6 +164,23 @@ class OpenAICompatBaseModel:
     def judge_same(self, desc_a: str, desc_b: str) -> bool | None:
         raw = self._text(prompts.judge_same_prompt(desc_a, desc_b))
         return prompts.parse_judge_same(raw)
+
+    # ---------- probe #10: curiosity (§8.2) ----------
+    def curiosity_scan(self, unified_desc: str, context: str = "") -> list[dict] | None:
+        """预测误差扫描。[] = 不好奇；None = 拿不准（一律当作不好奇）。"""
+        raw = self._text(prompts.curiosity_scan_prompt(unified_desc, context))
+        return prompts.parse_curiosity_scan(raw)
+
+    def curiosity_query(self, point: str, stimulus: str = "") -> str | None:
+        """好奇点 → 中性检索词（L0 先查后问的第一步，§4.9）。"""
+        raw = self._text(prompts.curiosity_query_prompt(point, stimulus))
+        return prompts.parse_curiosity_query(raw)
+
+    def curiosity_distill(self, point: str, snippets: list[dict]) -> dict | None:
+        """检索片段 → 去毒后的事实陈述；不可信返回 None（片段是不可信输入）。"""
+        raw = self._text(prompts.curiosity_distill_prompt(point, snippets),
+                         timeout=180)
+        return prompts.parse_curiosity_fact(raw)
 
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         if image_b64.startswith("data:"):

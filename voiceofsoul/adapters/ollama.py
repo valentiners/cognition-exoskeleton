@@ -1,7 +1,7 @@
 """Ollama adapter: local base model plus local embeddinggemma-2 embedder.
 
 - OllamaEmbedder   -> memory vectors (design §3.2: decoupled from the base model)
-- OllamaBaseModel  -> the 9-probe base-model contract
+- OllamaBaseModel  -> the base-model probe contract (10 probes incl. curiosity)
 - list_models / ensure_ollama -> Ollama transport helpers
 
 Prompts and parsers live in prompts.py so this adapter and the OpenAI-compatible
@@ -163,6 +163,32 @@ class OllamaBaseModel:
         except OSError:
             return None
         return prompts.parse_judge_same(raw)
+
+    # ---------- probe #10: curiosity (§8.2) ----------
+    def curiosity_scan(self, unified_desc: str, context: str = "") -> list[dict] | None:
+        """预测误差扫描。[] = 不好奇；None = 拿不准（一律当作不好奇）。"""
+        try:
+            raw = self._generate(prompts.curiosity_scan_prompt(unified_desc, context))
+        except OSError:
+            return None
+        return prompts.parse_curiosity_scan(raw)
+
+    def curiosity_query(self, point: str, stimulus: str = "") -> str | None:
+        """好奇点 → 中性检索词（L0 先查后问的第一步，§4.9）。"""
+        try:
+            raw = self._generate(prompts.curiosity_query_prompt(point, stimulus))
+        except OSError:
+            return None
+        return prompts.parse_curiosity_query(raw)
+
+    def curiosity_distill(self, point: str, snippets: list[dict]) -> dict | None:
+        """检索片段 → 去毒后的事实陈述；不可信返回 None（片段是不可信输入）。"""
+        try:
+            raw = self._generate(prompts.curiosity_distill_prompt(point, snippets),
+                                 timeout=180)
+        except OSError:
+            return None
+        return prompts.parse_curiosity_fact(raw)
 
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         prompt = prompts.image_prompt(hint)
