@@ -113,7 +113,7 @@ python -m voiceofsoul.exo consolidate          # run now (manual trigger)
    MEMORY.md (or fallback path), transcript attached;
 4. `skills/` copy synced; `SKILL.md` valid; `start.bat` untouched.
 
-## 7. Open questions — proposed defaults, awaiting confirmation
+## 7. Open questions — RESOLVED by Kimi/Ricky（已拍板，按此实现）
 
 1. Journal language: **Chinese** (the master's language), ~≤300 字;
 2. Auto-trigger point: **first chat of the day that lands in quiet hours**;
