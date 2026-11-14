@@ -29,6 +29,7 @@ from pathlib import Path
 from .adapters import (ApiAuthError, ApiUnreachableError, OllamaEmbedder,
                        ensure_ollama, ensure_openai, make_base_model)
 from .cognition import CognitiveModule
+from .doctor import GOLDEN_DIR, profile_path, run_physical
 from .memory import MemoryModule
 from .session import (AUTONOMY_MODES, DEFAULT_HOME, Session, load_state)
 from .temp_memory import TempMemory
@@ -121,6 +122,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_cur.add_argument("target", nargs="?", default=None,
                        help="mute 的好奇点 id，或 mode 的取值")
 
+    p_doc = sub.add_parser(
+        "doctor",
+        help="模型体检：四项黄金测试集 + 能力画像（设计 §8.4，只读不改记忆）")
+    _add_common(p_doc, suppress=True)
+    p_doc.add_argument("--no-images", action="store_true",
+                       help="跳过图像体检项（desc_quality 记 skipped）")
+
     sub.add_parser("stats", help="输出与 GET /api/stats 相同的统计 JSON")
     return parser
 
@@ -173,6 +181,42 @@ def _build_session(args, cfg: dict | None = None) -> Session:
     return session
 
 
+def _run_doctor(args, cfg: dict) -> int:
+    """模型体检（设计 §8.4）：只探测、只写报告文件，绝不碰记忆数据。"""
+    try:
+        if cfg["backend"] == "ollama":
+            ensure_ollama(cfg["ollama"])
+        else:
+            ensure_openai(cfg["api_base"], cfg["api_key"], cfg["base_model"])
+    except ApiAuthError as exc:
+        _print_error("api_auth", str(exc))
+        return 2
+    except ApiUnreachableError as exc:
+        _print_error("api_unreachable", str(exc))
+        return 2
+    except OSError as exc:
+        _print_error("ollama_unreachable", str(exc))
+        return 2
+
+    base = make_base_model(cfg["backend"], model=cfg["base_model"],
+                           host=cfg["ollama"], api_base=cfg["api_base"],
+                           api_key=cfg["api_key"])
+    images_dir = None if args.no_images else (GOLDEN_DIR / "images")
+    report = run_physical(base, images_dir=images_dir)
+
+    out = profile_path(cfg["home"], cfg["backend"], cfg["base_model"])
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+
+    score = report.get("fitness_score")
+    say = (f"体检做完了：{report['verdict_label']}"
+           + (f"，认知层适配度 {score}。" if score is not None else "。")
+           + "报告我只当是建议——要不要调参数，还是你说了算。")
+    _print_json({"say": say, "profile": report,
+                 "profile_path": str(out), "actions": [], "debug": ""})
+    return 0
+
+
 def _run_curiosity(session: Session, args) -> int:
     """好奇心子命令：list / mute <qid> / mode <quiet|normal|eager>。"""
     if args.action == "mode":
@@ -223,6 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     cfg = _resolve_config(args)
     if cfg["backend"] == "openai" and not cfg["api_key"]:
         parser.error("--backend openai 需要 OPENAI_API_KEY 或 --api-key")
+
+    if args.command == "doctor":
+        # 体检只读：不构造 session / memory，直接探测 + 出报告。
+        return _run_doctor(args, cfg)
 
     try:
         if args.command in ("chat", "respond"):

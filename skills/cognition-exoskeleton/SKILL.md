@@ -199,6 +199,29 @@ Search backends are pluggable through `COGSOUL_SEARCH_BACKEND` (`duckduckgo` def
 returns an empty list and falls back to asking the master: failing to self-learn loses no
 face.
 
+## Model physical
+
+Attach any base model (local or cloud) and give it a "physical exam" first — not just
+"is it reachable" (OpenClaw's `models status` already answers that) but "is it smart, is it
+suitable for the cognitive layer". Cloud and local models are examined identically, only
+through the §8.2 probe contract, in ≤ 30 probe calls (default 29).
+
+- **Four exams**: identity-arbitration accuracy (10 golden same/different description
+  pairs, `judge_same`, pass ≥ 70%) · confidence honesty (of self-reported ≥ 0.8 calls,
+  ≥ 75% must actually be right) · format compliance (strict parse of the text probes,
+  failure rate ≤ 10%) · identity-level description quality (3 golden test images checked
+  against the §3.5 element checklist, ≥ 3 elements each).
+- **Verdicts are advice, never action**: FIT ✅ / NEEDS_TUNING ⚠️ / COMMON_QA_ONLY /
+  NOT_RECOMMENDED. A verdict never adjusts a single parameter — recalibration stays a
+  separate, master-gated process.
+- **Read-only**: the exam never touches memory data; it only writes
+  `<COGSOUL_HOME>/model_profile_<backend>_<model>.json`, which `stats` then surfaces.
+
+```bash
+python -m voiceofsoul.exo doctor                 # full physical on the current base model
+python -m voiceofsoul.exo doctor --no-images     # skip the image exam (marked skipped)
+```
+
 ## Memory rules (summarized)
 
 - New features go to **temporary memory** first, always.

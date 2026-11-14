@@ -5,7 +5,9 @@
 > **perceive → judge by itself first → ask the master only when truly unsure → name together → remember → reuse & self-correct.**
 > （识别 → 基础模型先自主判断 → 真拿不准才求助主人 → 共同命名 → 记忆 → 复用与纠错）
 
-**voiceofsoul** · primitive version (v0.1.0) · Apache-2.0 · by Ricky Li ([github.com/valentiners](https://github.com/valentiners))
+**<img width="420"  alt="自认知进化宣传图 (1)" src="https://github.com/user-attachments/assets/066c9991-57a0-4c7c-9b84-5a71284d58ef" />
+
+voiceofsoul** · primitive version (v0.1.0) · Apache-2.0 · by Ricky Li ([github.com/valentiners](https://github.com/valentiners))
 
 ---
 
@@ -84,16 +86,16 @@ The full design lives in [docs/外挂认知模块与记忆模块方案_v4.0.md](
 
 Primitive version already ships (via local Ollama): base-model-first perception with LLM identity judgment, three-gate anti-duplication, two-layer memory (temp 7-day rule + permanent store), patch zone, conversational humanized UI (cat-paw send button, cancelable in-flight requests), model hot-switching with vector rebuild, image perception, CLI offline demo.
 
-| Direction | Status | Design doc section |
-|---|---|---|
-| Library packaging (`pyproject.toml`, importable `voiceofsoul`) | ⏳ roadmap | §9.9 |
-| OpenClaw skill-plugin integration (spec TBD) | ⏳ roadmap | §9.9 |
-| Video / real-world perception interface | ⏳ reserved | §9.9 |
-| Memory observability UI (inspect / intervene temp & permanent) | ⏳ roadmap | §9.9 |
-| Async arbitration (suspend vs. degrade when master is away) | ⏳ open | §9.9 |
-| Upgrade `demo.py` to v3.4 behaviors (temp memory, conversational) | ⏳ roadmap | §9.1/§9.2 |
-| Lazy patch auditing (zero downtime on base-model swap) | ⏳ roadmap | 4.5 |
-| Voice input | ⏳ open issues | §8 |
+| Direction                                                         | Status        | Design doc section |
+| ----------------------------------------------------------------- | ------------- | ------------------ |
+| Library packaging (`pyproject.toml`, importable `voiceofsoul`)    | ⏳ roadmap     | §9.9               |
+| OpenClaw skill-plugin integration (spec TBD)                      | ⏳ roadmap     | §9.9               |
+| Video / real-world perception interface                           | ⏳ reserved    | §9.9               |
+| Memory observability UI (inspect / intervene temp & permanent)    | ⏳ roadmap     | §9.9               |
+| Async arbitration (suspend vs. degrade when master is away)       | ⏳ open        | §9.9               |
+| Upgrade `demo.py` to v3.4 behaviors (temp memory, conversational) | ⏳ roadmap     | §9.1/§9.2          |
+| Lazy patch auditing (zero downtime on base-model swap)            | ⏳ roadmap     | 4.5                |
+| Voice input                                                       | ⏳ open issues | §8                 |
 
 ## Project layout
 

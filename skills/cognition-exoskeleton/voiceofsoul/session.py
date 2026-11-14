@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .curiosity import CuriosityQueue
+from .doctor import latest_profile
 from .memory import is_dormant
 from .tools.web import web_search
 
@@ -868,10 +869,19 @@ class Session:
         patches = [{"id": p["id"], "target": p["target"], "type": p["type"],
                     "status": p["status"], "content": p["content"]}
                    for p in self.cog.memory.patches]
+        profile = latest_profile(self.home)
         return {"stats": s, "entries": entries, "patches": patches,
                 "temp": self.temp.stats(), "pending": self.state.get("pending"),
                 "curiosity": self.curiosity.stats(),
-                "autonomy": self.state.get("autonomy", "normal")}
+                "autonomy": self.state.get("autonomy", "normal"),
+                "model_profile": profile and {
+                    "verdict": profile.get("verdict"),
+                    "verdict_label": profile.get("verdict_label"),
+                    "fitness_score": profile.get("fitness_score"),
+                    "generated_at": profile.get("generated_at"),
+                    "exams": {k: {"pass": v.get("pass"), "score": v.get("score")}
+                              for k, v in profile.get("exams", {}).items()},
+                }}
 
     # ---------- 模型切换（server / CLI 共用） ----------
     def reembed_all(self, embedder=None) -> tuple[int, int]:

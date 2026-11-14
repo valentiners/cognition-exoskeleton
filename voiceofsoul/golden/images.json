@@ -1,0 +1,23 @@
+{
+  "description": "体检第四项 desc_quality 的黄金图清单：expect 为 §3.5 要素分组关键词（任一命中即该组算覆盖），每张图要求 ≥3 组覆盖。关键词做大小写/空白归一匹配。",
+  "images": [
+    {"image": "person_silverhair.png", "expect": {
+      "发色": ["银白", "银发", "白色头发", "silver hair", "白发"],
+      "瞳色": ["紫", "purple"],
+      "显著标记": ["痣", "mole"],
+      "服装配色": ["蓝", "裙", "dress", "蝴蝶结", "丝带", "ribbon", "领结"]
+    }},
+    {"image": "person_scarman.png", "expect": {
+      "脸型": ["圆脸", "圆", "round"],
+      "眉形": ["浓眉", "浓", "粗眉", "thick"],
+      "显著标记": ["疤", "scar"],
+      "服装配色": ["绿", "夹克", "外套", "jacket"]
+    }},
+    {"image": "cat_notchedear.png", "expect": {
+      "毛色花纹": ["橘", "橙", "虎斑", "orange", "tabby"],
+      "耳形态": ["耳", "ear"],
+      "尾形态": ["尾", "tail"],
+      "瞳色": ["绿", "green"]
+    }}
+  ]
+}
