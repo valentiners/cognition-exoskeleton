@@ -182,6 +182,11 @@ class OpenAICompatBaseModel:
                          timeout=180)
         return prompts.parse_curiosity_fact(raw)
 
+    def compose_journal(self, material: str) -> str | None:
+        """睡眠进程（§10.3-#4）：当日素材 → 第一人称《成长日记》正文。"""
+        raw = self._text(prompts.journal_prompt(material), timeout=180)
+        return prompts.parse_journal(raw)
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         if image_b64.startswith("data:"):
             image_url = image_b64

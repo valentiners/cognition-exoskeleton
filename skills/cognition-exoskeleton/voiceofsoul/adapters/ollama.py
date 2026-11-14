@@ -190,6 +190,15 @@ class OllamaBaseModel:
             return None
         return prompts.parse_curiosity_fact(raw)
 
+    def compose_journal(self, material: str) -> str | None:
+        """睡眠进程（§10.3-#4）：当日素材 → 第一人称《成长日记》正文。
+        模型不可达/输出不合格 → None（今天就不写，不丢人）。"""
+        try:
+            raw = self._generate(prompts.journal_prompt(material), timeout=180)
+        except OSError:
+            return None
+        return prompts.parse_journal(raw)
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         prompt = prompts.image_prompt(hint)
         payload = {

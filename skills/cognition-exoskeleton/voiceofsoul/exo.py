@@ -122,6 +122,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_cur.add_argument("target", nargs="?", default=None,
                        help="mute 的好奇点 id，或 mode 的取值")
 
+    p_con = sub.add_parser(
+        "consolidate",
+        help="睡眠进程：整理当日认知素材，写《成长日记》（设计 §10.3-#4）")
+    _add_common(p_con, suppress=True)
+    p_con.add_argument("--force", action="store_true",
+                       help="今天已巩固过也重跑一次")
+
     p_doc = sub.add_parser(
         "doctor",
         help="模型体检：四项黄金测试集 + 能力画像（设计 §8.4，只读不改记忆）")
@@ -179,6 +186,23 @@ def _build_session(args, cfg: dict | None = None) -> Session:
         session.reembed_all()
         session._save()
     return session
+
+
+def _run_consolidate(session: Session, args, cfg: dict) -> int:
+    """睡眠进程（§10.3-#4）：只读认知库，写成长日记。"""
+    from .growth import consolidate
+    result = consolidate(cfg["home"], session.cog.base,
+                         memory=session.cog.memory, temp=session.temp,
+                         curiosity=session.curiosity, force=args.force)
+    if not result.get("ran"):
+        say = "今天的成长日记已经写过了，我不重复劳动～"
+    elif result.get("ok"):
+        say = "我把今天学的东西整理成日记了，你有空可以看看。"
+    else:
+        say = "今天没什么可整理的，先不写啦。"
+    _print_json({"say": say, "actions": [], "debug": json.dumps(
+        result, ensure_ascii=False)})
+    return 0
 
 
 def _run_doctor(args, cfg: dict) -> int:
@@ -273,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         return _run_doctor(args, cfg)
 
     try:
-        if args.command in ("chat", "respond"):
+        if args.command in ("chat", "respond", "consolidate"):
             # 编码器始终在本地 Ollama：先探测它，再探测云端后端。
             try:
                 ensure_ollama(cfg["ollama"])
@@ -301,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(session.chat(args.text.strip(), image_b64))
         elif args.command == "respond":
             _print_json(session.respond(args.text.strip()))
+        elif args.command == "consolidate":
+            return _run_consolidate(session, args, cfg)
         elif args.command == "curiosity":
             return _run_curiosity(session, args)
         else:

@@ -222,6 +222,30 @@ python -m voiceofsoul.exo doctor                 # full physical on the current 
 python -m voiceofsoul.exo doctor --no-images     # skip the image exam (marked skipped)
 ```
 
+## Sleep process (consolidation)
+
+Once a day, in quiet hours, the exoskeleton digests its own cognitive trail — what it
+learned, what it wondered, what it got wrong — into a first-person **Growth Journal**
+(≤300 words) appended to OpenClaw's `MEMORY.md`. This is the channel where the cognitive
+layer feeds the episodic layer (design §10.3-#4) and the amplifier of the curiosity loop.
+
+- **Boundary discipline (§1.6)**: the journal references entries by name only — never
+  copies feature details; no double-writing across layers.
+- **Zero disruption**: empty digest → zero model calls; an unreachable model simply
+  means no journal today; failures mark the day as attempted (no auto-retry;
+  `consolidate --force` re-runs manually).
+- **Destination**: `COGSOUL_MEMORY_MD` → auto-detect a writable `MEMORY.md` under the
+  OpenClaw workspace (`COGSOUL_OPENCLAW_ROOT` overrides the search root) → fallback
+  `<COGSOUL_HOME>/growth_journal/YYYY-MM-DD.md`.
+- **Trigger**: the first chat that lands in quiet hours runs it once; external
+  schedulers (OpenClaw cron, OS tasks) may call `python -m voiceofsoul.exo consolidate`
+  directly.
+
+```bash
+python -m voiceofsoul.exo consolidate            # write today's Growth Journal
+python -m voiceofsoul.exo consolidate --force    # re-run even if already attempted
+```
+
 ## Memory rules (summarized)
 
 - New features go to **temporary memory** first, always.

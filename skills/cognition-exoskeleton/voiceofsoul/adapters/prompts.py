@@ -152,6 +152,21 @@ def image_prompt(hint: str = "") -> str:
     return prompt
 
 
+def journal_prompt(material: str) -> str:
+    """睡眠进程（§10.3-#4）：把当日认知素材写成第一人称《成长日记》。
+
+    铁律：≤300 字、口语、真诚、像活物；不列表、不标题、不表情符号、
+    不暴露记忆机制（无置信度/闸口/向量字样）。素材已由调用方去敏（互引不双写）。"""
+    return (
+        "请把下面这份今天的学习素材，写成一篇你的当日成长日记（中文，300 字以内）。\n"
+        "要求：第一人称、口语化、真诚自然，像写给主人看的睡前随笔；\n"
+        "可以提到你认识了谁、学到了什么、哪里还拿不准；\n"
+        "禁止：列表、标题、表情符号、机械术语（置信度/向量/闸口/条目等一律不提）。\n"
+        "只输出日记正文本身，一个字的前言都不要加。\n\n"
+        f"今天的素材：\n{material}"
+    )
+
+
 # ---------------------------------------------------------------- parsers
 
 def parse_confidence(raw: str | None) -> float:
@@ -318,3 +333,14 @@ def clean_image_description(raw: str | None) -> str:
     ans = re.sub(r"\*\*|__|`|^#+\s*", "", ans, flags=re.MULTILINE)
     ans = re.sub(r"^\s*[-•]\s*", "", ans, flags=re.MULTILINE)
     return ans.strip()
+
+
+def parse_journal(raw: str | None) -> str | None:
+    """日记正文清洗：去 markdown 装饰与前言型客套，空/过短视为失败。"""
+    ans = clean_image_description(raw)
+    for pre in ("好的", "当然", "以下是", "这是", "日记：", "成长日记："):
+        if ans.startswith(pre):
+            ans = ans[len(pre):].lstrip("，,：: \n")
+    if len(ans) < 40:          # 短于 40 字视为没写出东西（占位/敷衍）
+        return None
+    return ans[:600]

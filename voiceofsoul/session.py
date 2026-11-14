@@ -30,6 +30,8 @@ from pathlib import Path
 
 from .curiosity import CuriosityQueue
 from .doctor import latest_profile
+from .growth import last_consolidation
+from . import growth as _growth
 from .memory import is_dormant
 from .tools.web import web_search
 
@@ -247,8 +249,29 @@ class Session:
               file=sys.stderr)
 
     # ---------- 一轮对话 ----------
+    def _maybe_consolidate(self) -> None:
+        """睡眠进程自动触发（§10.3-#4）：安静时段、今天还没巩固过 → 跑一次。
+
+        零打扰铁律：探测点缺失/失败/不在安静时段都静默跳过，绝不拖慢或
+        打断主人对话；失败也算尝试过（不每天重试）。"""
+        try:
+            if not self._in_quiet_hours():
+                return
+            marker = _growth.last_consolidation(self.home)
+            if marker and marker.get("date") == datetime.now().date().isoformat():
+                return
+            compose = getattr(self.cog.base, "compose_journal", None)
+            if not compose:
+                return
+            _growth.consolidate(self.home, self.cog.base,
+                                memory=self.cog.memory, temp=self.temp,
+                                curiosity=self.curiosity)
+        except Exception as exc:
+            print(f"[睡眠进程] 自动巩固失败：{exc}", file=sys.stderr)
+
     def chat(self, text: str, image_b64: str | None = None) -> dict:
         self._curiosity_note = ""
+        self._maybe_consolidate()
         try:
             result = self._chat(text, image_b64)
         except Exception:
@@ -871,6 +894,7 @@ class Session:
                    for p in self.cog.memory.patches]
         profile = latest_profile(self.home)
         return {"stats": s, "entries": entries, "patches": patches,
+                "last_consolidation": last_consolidation(self.home),
                 "temp": self.temp.stats(), "pending": self.state.get("pending"),
                 "curiosity": self.curiosity.stats(),
                 "autonomy": self.state.get("autonomy", "normal"),
