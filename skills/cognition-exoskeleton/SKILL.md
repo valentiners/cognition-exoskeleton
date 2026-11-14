@@ -1,6 +1,6 @@
 ---
 name: cognition-exoskeleton
-description: Give any LLM a self-cognition exoskeleton — perception-first recognition, conversational memory arbitration, two-layer memory (temporary/permanent) with 7-day promotion, dormancy and "think again" recall. No fine-tuning, model-agnostic, stdlib-only Python.
+description: Give any LLM a self-cognition exoskeleton — perception-first recognition, conversational memory arbitration, two-layer memory (temporary/permanent) with 7-day promotion, dormancy and "think again" recall. v0.2.0 adds curiosity (search-before-asking self-learning with source discipline), a model physical (doctor), and a sleep process that writes a daily Growth Journal to MEMORY.md. No fine-tuning, model-agnostic (local Ollama or OpenAI-compatible cloud), stdlib-only Python.
 metadata:
   openclaw:
     requires:

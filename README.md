@@ -7,7 +7,7 @@
 
 **<img width="420"  alt="自认知进化宣传图 (1)" src="https://github.com/user-attachments/assets/066c9991-57a0-4c7c-9b84-5a71284d58ef" />
 
-voiceofsoul** · primitive version (v0.1.0) · Apache-2.0 · by Ricky Li ([github.com/valentiners](https://github.com/valentiners))
+voiceofsoul** · v0.2.0 · Apache-2.0 · by Ricky Li ([github.com/valentiners](https://github.com/valentiners))
 
 ---
 
@@ -28,12 +28,41 @@ That question became this project: **自认知进化** — cognitive evolution.
 
 ## What this is
 
-External modules attached to a frozen base model (local Ollama, swappable):
+External modules attached to a frozen base model — local Ollama **or any OpenAI-compatible
+cloud API** (DeepSeek, Moonshot, OpenAI…), swappable at runtime:
 
-- **Cognitive Module** — base model judges first: common knowledge passes straight through (no questions asked); only genuinely uncertain cases are escalated to the master. 基础模型先认知，外挂只做它做不了的。
-- **Memory Module** — an append-only knowledge base: a main entry store (`entries`, for proper names / private knowledge) plus a **patch zone** (`patches`) that only stores incremental knowledge the base model lacks. （补丁区：基础模型已知概念只补粒度，绝不整库重复记忆。）
-- **Temp Memory** — new features are cached for 7 days first; they graduate to permanent memory when the master says "remember it", or automatically after appearing on 3 different days within a week. （临时记忆 + 七天法则。）
-- **Conversational by design** — no forced button choices; the master talks naturally ("她叫 Lucy" / "记住它" / "忘掉"), and free text answers every pending flow. 拟人化、无按钮、自由文本即回答。
+- **Cognitive Module** — the base model judges first: common knowledge passes straight through
+  (no questions asked); only genuinely uncertain cases escalate to the master.
+  基础模型先认知，外挂只做它做不了的。
+- **Memory Module** — an append-only knowledge base: a main entry store (`entries`, for proper
+  names / private knowledge) plus a **patch zone** (`patches`) that only stores incremental
+  knowledge the base model lacks. （补丁区：基础模型已知概念只补粒度，绝不整库重复记忆。）
+- **Temp Memory** — new features are cached for 7 days first; they graduate to permanent memory
+  when the master says "remember it", or automatically after appearing on 3 different days
+  within a week. （临时记忆 + 七天法则。）
+- **Layered retrieval & dormancy** — high-frequency / active / dormant layers; memories unused
+  for a year fall asleep and are only recalled when the master says "think again".
+  （分层检索 + 休眠记忆。）
+
+### New in v0.2.0 — the model gets a life of its own
+
+- **Curiosity** — prediction error is a learning signal: unknown things, shaky guesses,
+  perception contradictions and unknown proper nouns become questions. Tiers + an autonomy
+  budget keep it polite; unanswered questions queue up instead of nagging.
+  （好奇心模块：预测误差即学习信号，提问分级 + 自主额度，绝不连环问。）
+- **Self-retrieval channel** — *search before asking*: every curiosity point is first looked up
+  on the web (pluggable backend, stdlib-only); a credible, source-cited answer is self-learned
+  through the same three gates — the master is never interrupted when the web can teach it.
+  Web-learned knowledge is derated one tier and the master always wins on conflict. §4.9
+- **Model physical (`doctor`)** — attach any base model (cloud or local, treated identically)
+  and run a four-exam golden test set first: identity-arbitration accuracy, confidence honesty,
+  format compliance, identity-level description quality. A verdict (**FIT / NEEDS_TUNING /
+  COMMON_QA_ONLY / NOT_RECOMMENDED**) is advice only — it never adjusts a parameter.
+  （模型体检：先体检再上岗，结论只给建议。）
+- **Sleep process (`consolidate`)** — once a day in quiet hours the exoskeleton digests its own
+  day — what it learned, wondered, and got wrong — into a first-person *Growth Journal*
+  appended to OpenClaw's `MEMORY.md`: the cognitive layer feeding the episodic layer.
+  （睡眠进程：每天一篇成长日记，认知层反哺情节层。）
 
 ```
 new input ──→ unified description ──→ permanent memory hit (≥0.78 → recognized)
@@ -44,6 +73,7 @@ new input ──→ unified description ──→ permanent memory hit (≥0.78 
     (memory)     ├─ unique proper name ──→ LLM identity judge → recognize / learn
                  ├─ none ──────────────→ DIRECT pass-through (no questions)
                  └─ unsure ────────────→ nearest neighbor + LLM judge → guess / unknown
+                                     ↘ curious? → web_search → self-learn / ask politely
 ```
 
 ## Core principles
@@ -52,9 +82,10 @@ new input ──→ unified description ──→ permanent memory hit (≥0.78 
 - **No duplicate memory** — common knowledge the base model already has never enters the store; only *patches* are attached to its known concepts. 防重复记忆。
 - **Judge locally first** — the base model decides what it can (identity judgment replaces pop-up arbitration); the master's arbitration is reserved for what it genuinely can't. 能自己裁决的不打扰主人。
 - **Two-layer memory** — temp cache (7-day rule) + permanent store (three-gate anti-duplication); nothing enters permanent memory without either the master's word or the 3-days-in-a-week rule. 双层记忆。
-- **Conversational, humanized** — all replies in first-person natural language; mechanical labels stay in debug fields only. 拟人化对话。
+- **Conversational, humanized** — all replies in first-person natural language; mechanical labels stay in debug fields only; no forced buttons anywhere. 拟人化对话。
 - **Append-only** — rejected names, mistakes, audits: everything leaves a trail. 只追加、不覆盖。
 - **Single-master design** — one master = supreme authority and the only trusted input source. 单主人原则。
+- **Zero third-party dependencies** — the kernel is pure Python stdlib; cloud and local backends ride one shared probe contract. 零依赖，云端本地一视同仁。
 
 ## Quick start
 
@@ -68,7 +99,24 @@ Zero third-party dependencies (pure Python standard library), Python 3.9+.
 start.bat            # Windows; or: python server.py
 ```
 
-Chat in the browser: describe things or send images. The exoskeleton recognizes what it knows, passes through common knowledge, caches features you supply, and remembers what you tell it to.
+Chat in the browser: describe things or send images. The exoskeleton recognizes what it knows,
+passes through common knowledge, caches features you supply, and remembers what you tell it to.
+
+### CLI (same brain, scriptable)
+
+```bash
+python -m voiceofsoul.exo chat --text "她叫 Lucy，一只橘猫"   # perceive / learn
+python -m voiceofsoul.exo respond --text "记住它"              # answer a pending question
+python -m voiceofsoul.exo curiosity list                     # what is it wondering about?
+python -m voiceofsoul.exo curiosity mode quiet                # quiet | normal | eager
+python -m voiceofsoul.exo doctor                             # physical exam for the base model
+python -m voiceofsoul.exo consolidate                          # write today's Growth Journal
+python -m voiceofsoul.exo stats                              # memory + curiosity + exam summary
+```
+
+Cloud base model instead of local Ollama:
+`--backend openai --api-base https://api.deepseek.com/v1` + `OPENAI_API_KEY`
+(the local embedder stays on Ollama — all calibrated thresholds carry over).
 
 ### Offline demo (no Ollama needed)
 
@@ -76,49 +124,63 @@ Chat in the browser: describe things or send images. The exoskeleton recognizes 
 python demo.py
 ```
 
-`demo.py` is an interactive CLI demo with a simulated base model (v3.3-era behaviors: y/n prompts). It uses its own `demo_memory.json` and never touches the real memory store.
+`demo.py` is an interactive CLI demo with a simulated base model (v3.3-era behaviors: y/n
+prompts). It uses its own `demo_memory.json` and never touches the real memory store.
 
 ## Design doc
 
-The full design lives in [docs/外挂认知模块与记忆模块方案_v4.0.md](docs/外挂认知模块与记忆模块方案_v4.0.md) (bilingual Chinese/English) — the project's design "constitution". It consolidates everything through v3.4's browser-tested iterations: base-model-first perception, conversational interaction without buttons, two-layer memory with the 7-day rule, dormancy & layered retrieval, arbitration-timeout degradation, the video perception interface, and the OpenClaw skill path. (v3.4 and earlier versions are archived in the repo history.)
+The full design lives in
+[docs/外挂认知模块与记忆模块方案_v5.0.md](docs/外挂认知模块与记忆模块方案_v5.0.md)
+(bilingual Chinese/English) — the project's design "constitution". v5.0 (2026-11-14)
+repositions the exoskeleton as the **cognitive layer complementing OpenClaw's official
+memory** (§1.6: the official system records, this exoskeleton *recognizes*), and adds
+proactive learning: curiosity, self-retrieval, model physical, and the sleep process.
+Earlier versions are archived in `docs/` and the repo history.
 
 ## Roadmap
 
-Primitive version already ships (via local Ollama): base-model-first perception with LLM identity judgment, three-gate anti-duplication, two-layer memory (temp 7-day rule + permanent store), patch zone, conversational humanized UI (cat-paw send button, cancelable in-flight requests), model hot-switching with vector rebuild, image perception, CLI offline demo.
-
-| Direction                                                         | Status        | Design doc section |
-| ----------------------------------------------------------------- | ------------- | ------------------ |
-| Library packaging (`pyproject.toml`, importable `voiceofsoul`)    | ⏳ roadmap     | §9.9               |
-| OpenClaw skill-plugin integration (spec TBD)                      | ⏳ roadmap     | §9.9               |
-| Video / real-world perception interface                           | ⏳ reserved    | §9.9               |
-| Memory observability UI (inspect / intervene temp & permanent)    | ⏳ roadmap     | §9.9               |
-| Async arbitration (suspend vs. degrade when master is away)       | ⏳ open        | §9.9               |
-| Upgrade `demo.py` to v3.4 behaviors (temp memory, conversational) | ⏳ roadmap     | §9.1/§9.2          |
-| Lazy patch auditing (zero downtime on base-model swap)            | ⏳ roadmap     | 4.5                |
-| Voice input                                                       | ⏳ open issues | §8                 |
+| Direction                                                            | Status        | Design doc |
+| -------------------------------------------------------------------- | ------------- | ---------- |
+| Curiosity module (triggers, tiers, autonomy budget, queue)           | ✅ v0.2.0      | §4.6–§4.8  |
+| Self-retrieval learning channel (search before asking)             | ✅ v0.2.0      | §4.9 / §8.3 |
+| Model physical (`doctor`, four-exam golden test set)               | ✅ v0.2.0      | §8.4       |
+| Consolidation scheduler ("sleep process", Growth Journal)            | ✅ v0.2.0      | §10.3-#4   |
+| OpenAI-compatible cloud adapter                                      | ✅ v0.2.0      | §8.2       |
+| Library packaging (`pyproject.toml`, kernel/service decoupling)        | ⏳ roadmap     | §10.3-#5   |
+| OpenClaw skill publish (MIT-0 on ClawHub; skill draft in `skills/`)  | ⏳ in progress | §10.2      |
+| Video / real-world perception interface                              | ⏳ reserved    | §3.6       |
+| Memory observability UI (stats already expose dormancy & curiosity)  | ⏳ roadmap     | §10.3-#7   |
+| T3/T4 curiosity triggers calibration (currently off by default)      | ⏳ pending §6.5 | §4.6      |
+| Voice input                                                          | ⏳ open        | §12        |
 
 ## Project layout
 
 ```
 cognition-exoskeleton/
-├── server.py              # minimal HTTP test service + session orchestration
-├── start.bat              # Windows one-click launcher (exclusive-port guard)
-├── demo.py                # offline CLI demo (v3.3-era; uses demo_memory.json)
-├── voiceofsoul/           # core package (stdlib-only)
-│   ├── cognition.py       # perception pipeline + three gates + learning
-│   ├── memory.py          # permanent memory: entries + patches
-│   ├── temp_memory.py     # temp memory + 7-day graduation rule
-│   ├── embedding.py       # hashing baseline embedder (offline demo only)
-│   └── adapters/ollama.py # the only file that talks to Ollama
-├── web/index.html         # browser test UI (cat-paw button, staged images)
-├── _test_temp_memory.py   # unit tests for the 7-day rule (mocked dates)
-├── docs/                  # design doc (方案 v3.4, Chinese) — chapter 9 is authoritative
-├── examples/              # recorded CLI sample session (v3.3-era)
-├── AGENTS.md              # charter for coding agents (read first)
-├── .github/ABOUT.md       # finalized GitHub About text (bilingual) & topics
-└── LICENSE                # Apache-2.0, (c) 2026 Ricky Li
+├── server.py                 # minimal HTTP test service + session orchestration
+├── start.bat                 # Windows one-click launcher (exclusive-port guard)
+├── demo.py                   # offline CLI demo (v3.3-era; uses demo_memory.json)
+├── voiceofsoul/              # core package (stdlib-only)
+│   ├── cognition.py          # perception pipeline + three gates + learning/correction
+│   ├── memory.py             # permanent memory: entries + patches, layered retrieval
+│   ├── temp_memory.py        # temp memory + 7-day graduation rule
+│   ├── curiosity.py          # curiosity queue (7-day TTL, wake-up, mute)
+│   ├── doctor.py             # model physical: four exams + verdict
+│   ├── growth.py             # sleep process: digest → Growth Journal
+│   ├── session.py            # chat orchestration (arbitration, curiosity, consolidation)
+│   ├── exo.py                # CLI entry (chat/respond/curiosity/doctor/consolidate/stats)
+│   ├── tools/web.py          # the only file touching a search backend (pluggable)
+│   ├── golden/               # doctor's golden test set (pairs, calibration, images)
+│   └── adapters/             # ollama.py / openai_compat.py (one shared probe contract)
+├── web/index.html            # browser test UI (cat-paw button, staged images)
+├── skills/cognition-exoskeleton/  # OpenClaw skill bundle (SKILL.md + kernel copy)
+├── docs/                     # design constitution v5.0 (bilingual) + task briefs
+├── AGENTS.md                 # charter for coding agents (read first)
+├── .github/ABOUT.md          # finalized GitHub About text (bilingual) & topics
+└── LICENSE                   # Apache-2.0, (c) 2026 Ricky Li
 ```
 
 ## License
 
 Apache License 2.0, see [LICENSE](LICENSE).
+（OpenClaw ClawHub 发布的 skill 为 MIT-0，署名 Ricky Li 见 `homepage` 声明。）
