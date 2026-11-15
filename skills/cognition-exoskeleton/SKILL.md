@@ -60,6 +60,10 @@ By Ricky Li. License: MIT-0 on ClawHub; the source repository is Apache-2.0.
   (promoted only on the master's word or repeated real-world occurrence).
 - Puts long-uncalled memories to sleep (dormancy) so daily retrieval stays fast, and wakes
   them when the master says "think again".
+- Checks whether the base model already knows a knowledge point before storing it (three-way
+  consistency probe). Known things are not memorized again; anything uncertain is still
+  stored — false negatives are cheaper than false positives, and white records fade through
+  dormancy.
 - Degrades unanswered arbitration into temporary memory instead of stalling the master's work.
 
 ## What this skill does NOT do
