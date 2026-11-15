@@ -225,8 +225,11 @@ def _run_doctor(args, cfg: dict) -> int:
     base = make_base_model(cfg["backend"], model=cfg["base_model"],
                            host=cfg["ollama"], api_base=cfg["api_base"],
                            api_key=cfg["api_key"])
+    # 第五科（W1）：编码器分离度。编码器目前仍是本地 Ollama；不可达时该科
+    # 记 skipped，绝不打断前四科（§8.4 / 任务书 §2.1）。
+    embedder = OllamaEmbedder(model=cfg["embedding_model"], host=cfg["ollama"])
     images_dir = None if args.no_images else (GOLDEN_DIR / "images")
-    report = run_physical(base, images_dir=images_dir)
+    report = run_physical(base, images_dir=images_dir, embedder=embedder)
 
     out = profile_path(cfg["home"], cfg["backend"], cfg["base_model"])
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2),
@@ -234,8 +237,20 @@ def _run_doctor(args, cfg: dict) -> int:
 
     score = report.get("fitness_score")
     say = (f"体检做完了：{report['verdict_label']}"
-           + (f"，认知层适配度 {score}。" if score is not None else "。")
-           + "报告我只当是建议——要不要调参数，还是你说了算。")
+           + (f"，认知层适配度 {score}。" if score is not None else "。"))
+    emb = report.get("embedder") or {}
+    if emb.get("status") == "ok":
+        verdict = emb.get("verdict")
+        phrase = {
+            "SEPARABLE": "向量视力不错：同一人和不同人分得开。",
+            "USABLE": "向量视力还算够用：能分开，但边界有点糊。",
+            "DEGRADED": "向量视力不太行：有些不同的人贴得比同一个人还近。",
+        }.get(verdict)
+        if phrase:
+            say += phrase
+    elif emb.get("status") == "skipped":
+        say += "这次没量到我的向量视力（编码器不可用），回头再补。"
+    say += "报告我只当是建议——要不要调参数，还是你说了算。"
     _print_json({"say": say, "profile": report,
                  "profile_path": str(out), "actions": [], "debug": ""})
     return 0

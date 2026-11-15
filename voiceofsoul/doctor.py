@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import base64
 import json
+import math
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,6 +40,14 @@ VERDICT_LABELS = {
     VERDICT_COMMON: "仅适合常识问答（禁个体识别场景）",
     VERDICT_NO: "不建议 ❌",
 }
+
+# ---- 第五科：编码器分离度（W1 编码器体检，2026-11-15）----
+# 首跑不设及格线（任务书 §2.2）：只报告分布，标定待 Ricky/Kimi 拍板。
+EMBEDDER_SEED = 20261115   # 跨组配对固定种子，保证可复现
+CROSS_SAMPLES = 12         # 跨人配对抽样数（任务书要求 ≥10）
+VERDICT_SEPARABLE = "SEPARABLE"   # margin > 0：全体可线性分开
+VERDICT_USABLE = "USABLE"         # margin < 0，但同分布均值差 > 2×合并标准差
+VERDICT_DEGRADED = "DEGRADED"     # 存在实质性重叠
 
 
 class _ProbeCounter:
@@ -244,6 +254,148 @@ def exam_desc_quality(base: _ProbeCounter,
             "detail": detail}
 
 
+# ---------- 第五科：编码器分离度（探测点 #12 / W1） ----------
+
+def _std(values: list) -> float | None:
+    """样本标准差（n-1）；少于 2 个样本返回 None。"""
+    if len(values) < 2:
+        return None
+    mean = sum(values) / len(values)
+    var = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+    return math.sqrt(var)
+
+
+def _pooled_std(a: list, b: list) -> float | None:
+    """合并样本标准差（n-1 加权）；两库任一侧不足 2 个样本则用可得的一侧。"""
+    if len(a) >= 2 and len(b) >= 2:
+        ma, mb = sum(a) / len(a), sum(b) / len(b)
+        ss = sum((v - ma) ** 2 for v in a) + sum((v - mb) ** 2 for v in b)
+        return math.sqrt(ss / (len(a) + len(b) - 2))
+    return _std(a) if len(a) >= 2 else _std(b)
+
+
+def _cross_pairs(n_pairs: int, n: int, seed: int) -> list[tuple[int, int]]:
+    """跨组配对：不同 pair 索引 × 任一侧描述，固定种子无放回抽样。
+
+    返回的是“文本索引”对（0..2n-1，偶数=a，奇数=b），与 golden 对顺序对应。
+    """
+    combos = []
+    for i in range(n_pairs):
+        for j in range(i + 1, n_pairs):
+            for x in (0, 1):
+                for y in (0, 1):
+                    combos.append((2 * i + x, 2 * j + y))
+    if not combos:
+        return []
+    rng = random.Random(seed)
+    return rng.sample(combos, min(n, len(combos)))
+
+
+def separation_verdict(margin: float, same_mean: float, diff_mean: float,
+                       pooled_std: float | None) -> str:
+    """判定档（任务书 §2.2）：首跑不设及格线，只分三档定性。"""
+    if margin > 0:
+        return VERDICT_SEPARABLE
+    if pooled_std is not None and (same_mean - diff_mean) > 2 * pooled_std:
+        return VERDICT_USABLE
+    return VERDICT_DEGRADED
+
+
+def exam_embedder_separation(embedder, pairs: list[dict] | None = None,
+                             seed: int = EMBEDDER_SEED,
+                             n_cross: int = CROSS_SAMPLES) -> dict:
+    """第五科：当前编码器分得开“同一人”与“不同人”吗？分到什么程度？
+
+    数据源：golden/judge_pairs.json（同一人 5 对 + 不同人 5 对，不调 LLM）；
+    同一人相似度只取 same=True 的配对；跨人相似度在不同组之间抽样（固定种子）。
+
+    指标（任务书 §2.2）：same_min / diff_max / margin / overlap_ratio / 判定档。
+    任何一步失败（无 embedder / 不可达 / 数据不足）→ skipped，绝不拖垮其他四科。
+    """
+    base = {"exam": "embedder_separation", "status": "skipped",
+            "pass": None, "score": None, "calibrated": False}
+    if embedder is None:
+        return {**base, "reason": "no_embedder"}
+
+    try:
+        if pairs is None:
+            pairs = _load_golden("judge_pairs.json")["pairs"]
+    except Exception as exc:
+        return {**base, "reason": "golden_load_failed", "error": str(exc)[:200]}
+
+    texts: list[str] = []
+    for pair in pairs:
+        texts.extend([pair.get("a", ""), pair.get("b", "")])
+    vectors: dict[str, list] = {}
+
+    def vec(text: str):
+        if text not in vectors:
+            vectors[text] = embedder.embed(text)
+        return vectors[text]
+
+    try:
+        for text in texts:
+            vec(text)
+    except Exception as exc:      # 本地编码器不可用（如纯云端场景）→ 跳过该科
+        return {**base, "reason": "embedder_error", "error": str(exc)[:200]}
+
+    def cosine(a, b) -> float:
+        return round(float(embedder.cosine(a, b)), 4)
+
+    same_dist = [cosine(vec(p["a"]), vec(p["b"]))
+                 for p in pairs if p.get("same") is True]
+    chosen = _cross_pairs(len(pairs), n_cross, seed)
+    diff_dist = [cosine(vec(texts[i]), vec(texts[j])) for i, j in chosen]
+
+    if not same_dist or not diff_dist:
+        return {**base, "reason": "insufficient_pairs",
+                "n_same": len(same_dist), "n_diff": len(diff_dist),
+                "embed_calls": len(vectors)}
+
+    same_min, diff_max = min(same_dist), max(diff_dist)
+    margin = round(same_min - diff_max, 4)
+    same_mean = round(sum(same_dist) / len(same_dist), 4)
+    diff_mean = round(sum(diff_dist) / len(diff_dist), 4)
+    pooled = _pooled_std(same_dist, diff_dist)
+
+    # 交集范围占比：两区间交集长度 / 并集跨度；0 = 完美分离
+    union_lo = min(min(same_dist), min(diff_dist))
+    union_hi = max(max(same_dist), max(diff_dist))
+    lo = max(min(same_dist), min(diff_dist))
+    hi = min(max(same_dist), max(diff_dist))
+    span = union_hi - union_lo
+    # 零跨度 = 两组分布塔缩在同一点上，完全重叠；否则交集长度/并集跨度
+    overlap_ratio = (round(max(0.0, hi - lo) / span, 4) if span > 0 else 1.0)
+
+    verdict = separation_verdict(margin, same_mean, diff_mean, pooled)
+    return {
+        "exam": "embedder_separation",
+        "status": "ok",
+        "pass": None,                 # 首跑不设及格线（任务书 §2.2）
+        "calibrated": False,
+        "model": getattr(embedder, "model_tag", "") or "",
+        "score": margin,              # 分离度分数 = margin（核心指标）
+        "score_kind": "margin",
+        "verdict": verdict,
+        "n_same": len(same_dist),
+        "n_diff": len(diff_dist),
+        "same_min": round(same_min, 4),
+        "diff_max": round(diff_max, 4),
+        "margin": margin,
+        "overlap_ratio": overlap_ratio,
+        "same_mean": same_mean,
+        "diff_mean": diff_mean,
+        "same_std": round(_std(same_dist), 4) if _std(same_dist) is not None else None,
+        "diff_std": round(_std(diff_dist), 4) if _std(diff_dist) is not None else None,
+        "pooled_std": round(pooled, 4) if pooled is not None else None,
+        "seed": seed,
+        "same_dist": same_dist,
+        "diff_dist": diff_dist,
+        "cross_pairs": [[i, j] for i, j in chosen],
+        "embed_calls": len(vectors),
+    }
+
+
 # ---------- 汇总 ----------
 
 def _verdict(exams: dict[str, dict]) -> str:
@@ -277,11 +429,14 @@ def _fitness_score(exams: dict[str, dict]) -> float | None:
     return round(acc / total_w, 4) if total_w else None
 
 
-def run_physical(base, *, images_dir: Path | None = None) -> dict:
-    """对 base 模型跑完四项体检，返回报告字典（不落盘，落盘由调用方负责）。
+def run_physical(base, *, images_dir: Path | None = None,
+                 embedder=None) -> dict:
+    """对 base 模型跑完四项体检 + 编码器分离度（第五科），返回报告字典。
 
     base：适配器实例（OllamaBaseModel / OpenAICompatBaseModel）；
-    images_dir：黄金测试图目录，None = 跳过图像项（算 skipped）。
+    images_dir：黄金测试图目录，None = 跳过图像项（算 skipped）；
+    embedder：本地编码器实例，None / 不可用 → 第五科 skipped（不中断其余四科）。
+    落盘由调用方负责；第五科不计入 api_calls（不走 LLM，只耗 embedding）。
     """
     counter = _ProbeCounter(base)
     judge_pairs = _load_golden("judge_pairs.json")["pairs"]
@@ -309,11 +464,19 @@ def run_physical(base, *, images_dir: Path | None = None) -> dict:
                                  "status": "error", "pass": None,
                                  "score": None, "error": str(exc)}
 
+    try:
+        embedder_exam = exam_embedder_separation(embedder)
+    except Exception as exc:                       # 第五科异常不得拖垮整体（铁律）
+        embedder_exam = {"exam": "embedder_separation", "status": "error",
+                         "pass": None, "score": None, "calibrated": False,
+                         "error": str(exc)[:200]}
+
     verdict = _verdict(exams)
     return {
         "schema": "cognition-exoskeleton/model_profile@1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "exams": exams,
+        "embedder": embedder_exam,
         "verdict": verdict,
         "verdict_label": VERDICT_LABELS[verdict],
         "fitness_score": _fitness_score(exams),
