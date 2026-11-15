@@ -64,6 +64,10 @@ By Ricky Li. License: MIT-0 on ClawHub; the source repository is Apache-2.0.
   consistency probe). Known things are not memorized again; anything uncertain is still
   stored — false negatives are cheaper than false positives, and white records fade through
   dormancy.
+- Links every new memory to its nearest neighbors and, when two memories are too close to
+  call, asks the master one natural clarifying question (identity) or verifies via a web
+  search (knowledge). A correction retires an entry instead of deleting it — it stays
+  archived and can be revived.
 - Degrades unanswered arbitration into temporary memory instead of stalling the master's work.
 
 ## What this skill does NOT do
