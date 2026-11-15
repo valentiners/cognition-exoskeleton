@@ -248,5 +248,14 @@ def consolidate(home, base, *, memory=None, temp=None, curiosity=None,
             result["ok"] = False
             result["reason"] = f"write_failed: {exc}"
             print(f"[睡眠进程] 日记落盘失败：{exc}", file=sys.stderr)
+    backup_result = {"ran": False, "reason": "skipped"}
+    try:
+        from .backup import daily_backup
+        backup_result = daily_backup(home, now=now)
+    except Exception as exc:
+        print(f"[睡眠进程] 灵魂备份失败：{exc}", file=sys.stderr)
+        backup_result = {"ran": False, "reason": "error"}
+    result["backup"] = backup_result
+
     _save_marker(home, result)
     return result

@@ -148,6 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_sur.add_argument("--yes", action="store_true",
                        help="确认执行；不带时只返回预估")
 
+    p_res = sub.add_parser(
+        "restore",
+        help="灵魂备份恢复（仅主人手动：--list 看备份，--tag <时间戳> --yes 恢复）")
+    _add_common(p_res, suppress=True)
+    p_res.add_argument("--list", action="store_true", help="列出可用备份")
+    p_res.add_argument("--tag", default=None, help="要恢复的备份时间戳")
+    p_res.add_argument("--yes", action="store_true",
+                       help="二次确认；不带时只打印差异与清单")
+    p_res.add_argument("--backup-dir", default=None,
+                       help="备份目录（默认 COGSOUL_BACKUP_DIR 或第二块盘）")
+
     sub.add_parser("stats", help="输出与 GET /api/stats 相同的统计 JSON")
     return parser
 
@@ -313,6 +324,50 @@ def _run_survey(args, cfg: dict) -> int:
     return 0
 
 
+def _run_restore(args, cfg: dict) -> int:
+    """灵魂备份恢复：仅主人手动；二次确认 + 恢复前自动快照。"""
+    from .backup import list_backups, resolve_backup_dir, restore_backup
+
+    home = cfg["home"]
+    backup_dir = Path(args.backup_dir) if args.backup_dir \
+        else resolve_backup_dir(home)[0]
+    if args.list or not args.tag:
+        items = list_backups(backup_dir, verify=True)
+        say = (f"我一共存了 {len(items)} 份灵魂备份。" if items
+               else "我还一份备份都没有呢。")
+        _print_json({"say": say, "actions": [], "debug": "",
+                     "backups": items, "backup_dir": str(backup_dir)})
+        return 0
+
+    result = restore_backup(home, args.tag, backup_dir, confirm=args.yes)
+    status = result.get("status")
+    if status == "needs_confirm":
+        cur = result.get("current", {})
+        bak = result.get("backup", {})
+        say = (f"找到备份 {args.tag}（{result.get('created_at')}），"
+               f"会恢复 {len(result.get('files', []))} 个文件。"
+               f"当前 entries={cur.get('entries')} / 备份 entries={bak.get('entries')}；"
+               "确认的话加 --yes 再执行一次，我会先把当前状态也存一份。")
+        _print_json({"say": say, "actions": [], "debug": "",
+                     "restore": result})
+        return 0
+    if status == "ok":
+        st = result.get("stats", {})
+        say = (f"恢复好了：entries={st.get('entries')}，"
+               f"superseded={st.get('superseded')}，"
+               f"好奇/假设={st.get('curiosity')}/{st.get('hypotheses')}。"
+               f"恢复前的快照是 {result.get('pre_restore')}。")
+        _print_json({"say": say, "actions": [], "debug": "",
+                     "restore": result})
+        return 0
+    if status in ("not_found", "corrupt"):
+        _print_error(f"restore_{status}",
+                     json.dumps(result, ensure_ascii=False))
+        return 2
+    _print_error("restore_failed", json.dumps(result, ensure_ascii=False))
+    return 1
+
+
 def _run_curiosity(session: Session, args) -> int:
     """好奇心子命令：list / mute <qid> / mode <quiet|normal|eager>。"""
     if args.action == "mode":
@@ -371,6 +426,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "survey":
         # 知识边界报告只读日志 + 探测，不构造 session / memory（零写记忆）。
         return _run_survey(args, cfg)
+
+    if args.command == "restore":
+        # 恢复只读备份目录 + 写 home；不需要模型。
+        return _run_restore(args, cfg)
 
     try:
         if args.command in ("chat", "respond", "consolidate"):
