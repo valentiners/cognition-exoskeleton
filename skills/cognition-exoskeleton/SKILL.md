@@ -68,6 +68,10 @@ By Ricky Li. License: MIT-0 on ClawHub; the source repository is Apache-2.0.
   call, asks the master one natural clarifying question (identity) or verifies via a web
   search (knowledge). A correction retires an entry instead of deleting it — it stays
   archived and can be revived.
+- Turns uncertain guesses into evidence-backed **hypotheses** (falsifiable statement +
+  evidence + plan). A confirmed hypothesis votes through the same ledger and any compiled
+  entry carries a birth certificate; a refuted one leaves a correction patch; an expired
+  one vanishes without a word (no chat, no journal).
 - Degrades unanswered arbitration into temporary memory instead of stalling the master's work.
 
 ## What this skill does NOT do
