@@ -22,6 +22,12 @@ from pathlib import Path
 DORMANT_DAYS = 365      # 超过这么久未被调用 → 休眠（9.10，概念默认待标定）
 FREQ_WINDOW_DAYS = 90   # 高频层：近窗口期内有命中即算（不设次数门槛，9.10 修订）
 
+# ---------- L2 织网与信念修正（W3，2026-11-15）----------
+NEIGHBOR_TOP = 5        # 写入时固化的邻居清单条数（任务书 §2.1）
+VOTE_FLOOR = 1          # 占位：净置信度 < 1 → superseded（一条纠错票即退休）
+ACTIVE = "active"
+SUPERSEDED = "superseded"
+
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -65,6 +71,38 @@ class MemoryModule:
         data = self._load()
         self.entries: dict[str, dict] = data.get("entries", {})
         self.patches: list[dict] = data.get("patches", [])
+        for entry in self.entries.values():
+            self._normalize_entry(entry)
+
+    # ---------- 向后兼容 ----------
+    @staticmethod
+    def _normalize_entry(entry: dict):
+        """旧条目缺字段按默认补齐（只补本地结构，不自行改写磁盘）。"""
+        entry.setdefault("status", ACTIVE)
+        entry.setdefault("neighbors", [])
+        votes = entry.setdefault("votes", {})
+        votes.setdefault("positive", 1)   # 建条目即一张正票
+        votes.setdefault("negative", 0)
+        meta = entry.setdefault("neighbors_meta", {})
+        meta.setdefault("embedder_version",
+                        entry.get("embedding_meta", {}).get("model", ""))
+        meta.setdefault("computed_at", None)
+        meta.setdefault("valid", bool(entry.get("neighbors")))
+
+    @staticmethod
+    def _net(entry: dict) -> int:
+        votes = entry.get("votes") or {}
+        return int(votes.get("positive", 1)) - int(votes.get("negative", 0))
+
+    def _retrievable(self, entry: dict) -> bool:
+        """检索资格：未退休且净置信度不低于地板。"""
+        return (entry.get("status", ACTIVE) != SUPERSEDED
+                and self._net(entry) >= VOTE_FLOOR)
+
+    def effective_confidence(self, entry_id: str) -> int:
+        """实时结算有效置信度（正票 − 负票），不预计算缓存（任务书 §3.4）。"""
+        entry = self.entries.get(entry_id)
+        return self._net(entry) if entry else 0
 
     # ---------- 持久化 ----------
     def _load(self) -> dict:
@@ -90,9 +128,45 @@ class MemoryModule:
         entry.setdefault("updates", [])
         entry.setdefault("threshold_meta", {}).setdefault("by_base_model", {})
         entry.setdefault("health", {"hit_count": 0, "last_hit_at": None})
+        self._normalize_entry(entry)
         self.entries[entry_id] = entry
+        # L2 织网（任务书 §2.1）：写入时一次性固化 Top-5 邻居，不维护实时索引。
+        self._build_neighbors(entry_id)
         self._persist()
         return entry_id
+
+    def _build_neighbors(self, entry_id: str):
+        """只算一次：全库 Top-N 邻居 + 当时的编码器版本（§3.3 / 任务书 §2.1）。"""
+        entry = self.entries.get(entry_id)
+        if not entry or not self.embedder:
+            return
+        if not hasattr(self.embedder, "cosine"):
+            return
+        emb = entry.get("features", {}).get("embedding")
+        if not emb:
+            return
+        scored = []
+        for oid, other in self.entries.items():
+            if oid == entry_id or not self._retrievable(other):
+                continue
+            other_emb = other.get("features", {}).get("embedding")
+            if not other_emb:
+                continue
+            scored.append((oid, round(float(self.embedder.cosine(emb, other_emb)), 4)))
+        scored.sort(key=lambda item: -item[1])
+        entry["neighbors"] = [{"entry_id": oid, "similarity": sim}
+                              for oid, sim in scored[:NEIGHBOR_TOP]]
+        entry["neighbors_meta"] = {
+            "embedder_version": getattr(self.embedder, "model_tag", ""),
+            "computed_at": _now(),
+            "valid": True,
+        }
+
+    def invalidate_neighbors(self):
+        """换编码器后旧邻居清单标注失效（不自动重建，§3.3 / 任务书 §2.1）。"""
+        for entry in self.entries.values():
+            entry.setdefault("neighbors_meta", {})["valid"] = False
+        self._persist()
 
     def update(self, entry_id: str, update_record: dict):
         """只追加更新：错误事件、重命名、MERGE 增补，全部进 updates 留痕。"""
@@ -115,6 +189,8 @@ class MemoryModule:
         q = self.embedder.embed(query_text)
         results = []
         for eid, e in self.entries.items():
+            if not self._retrievable(e):
+                continue
             if layer == "frequent" and (is_dormant(e) or not is_frequent(e)):
                 continue
             if layer == "active" and is_dormant(e):
@@ -141,6 +217,8 @@ class MemoryModule:
         for eid, e in self.entries.items():
             if not include_dormant and is_dormant(e):
                 continue
+            if not self._retrievable(e):
+                continue
             emb = e.get("features", {}).get("embedding")
             if not emb:
                 continue
@@ -158,6 +236,103 @@ class MemoryModule:
         h["hit_count"] += 1
         h["last_hit_at"] = _now()
         self._persist()
+
+    # ---------- L2 织网：排名与一跳邻居补检 ----------
+    def ranked_matches(self, query_text: str, layer: str = "active",
+                       limit: int = 2) -> list[tuple[str, float]]:
+        """不分阈值的 Top-N 排名（冲突侦测用：需要第二名分数）。"""
+        q = self.embedder.embed(query_text)
+        scored = []
+        for eid, e in self.entries.items():
+            if not self._retrievable(e):
+                continue
+            if layer == "active" and is_dormant(e):
+                continue
+            if layer == "frequent" and (is_dormant(e) or not is_frequent(e)):
+                continue
+            emb = e.get("features", {}).get("embedding")
+            if not emb:
+                continue
+            scored.append((eid, round(float(self.embedder.cosine(q, emb)), 4)))
+        scored.sort(key=lambda item: -item[1])
+        return scored[:limit]
+
+    def neighbor_probe(self, query_text: str, threshold: float,
+                       layer: str = "active") -> list[tuple[str, float]]:
+        """检索第二梯队（最小版，任务书 §2.5）：只跳一次。
+
+        直接检索未命中时，以当前层最相近条目为锚，检查它的邻居清单；
+        邻居清单版本失效或编码器不一致 → 不解释（§3.3）。
+        绝不从邻居再往外跳（防级联放大）。
+        """
+        q = self.embedder.embed(query_text)
+        anchor, best = None, -1.0
+        for eid, e in self.entries.items():
+            if not self._retrievable(e):
+                continue
+            if layer == "active" and is_dormant(e):
+                continue
+            if layer == "frequent" and (is_dormant(e) or not is_frequent(e)):
+                continue
+            emb = e.get("features", {}).get("embedding")
+            if not emb:
+                continue
+            score = float(self.embedder.cosine(q, emb))
+            if score > best:
+                anchor, best = e, score
+        if not anchor:
+            return []
+        meta = anchor.get("neighbors_meta") or {}
+        if not meta.get("valid"):
+            return []
+        version = meta.get("embedder_version")
+        if version and version != getattr(self.embedder, "model_tag", version):
+            return []          # 换过编码器：旧邻居清单不解释
+        hits = []
+        for nb in anchor.get("neighbors", []):
+            other = self.entries.get(nb.get("entry_id"))
+            if not other or not self._retrievable(other):
+                continue
+            emb = other.get("features", {}).get("embedding")
+            if not emb:
+                continue
+            score = round(float(self.embedder.cosine(q, emb)), 4)
+            if score >= threshold:
+                hits.append((other["id"], score))
+        hits.sort(key=lambda item: -item[1])
+        return hits
+
+    # ---------- 信念修正：否决票 / 状态反转 / 复活 ----------
+    def apply_vote(self, entry_id: str, weight: int, note: str = "") -> dict:
+        """给条目投一票（正/负），实时结算净置信度；跌破地板则转 superseded。"""
+        entry = self.entries.get(entry_id)
+        if not entry:
+            raise KeyError(entry_id)
+        votes = entry.setdefault("votes", {"positive": 1, "negative": 0})
+        if weight >= 0:
+            votes["positive"] = int(votes.get("positive", 0)) + weight
+        else:
+            votes["negative"] = int(votes.get("negative", 0)) - weight
+        net = self._net(entry)
+        if net < VOTE_FLOOR:
+            entry["status"] = SUPERSEDED
+        elif entry.get("status") == SUPERSEDED:
+            entry["status"] = ACTIVE
+        self.update(entry_id, {"event": "置信票", "weight": weight,
+                               "note": note, "net": net,
+                               "status": entry.get("status", ACTIVE)})
+        return {"entry_id": entry_id, "net": net,
+                "status": entry.get("status", ACTIVE)}
+
+    def revive(self, entry_id: str) -> dict:
+        """复活已退休条目：补一张正票回到地板以上（档案仍在，可再纠错）。"""
+        entry = self.entries.get(entry_id)
+        if not entry:
+            raise KeyError(entry_id)
+        if entry.get("status") != SUPERSEDED and self._net(entry) >= VOTE_FLOOR:
+            return {"entry_id": entry_id, "net": self._net(entry),
+                    "status": entry.get("status", ACTIVE)}
+        return self.apply_vote(entry_id, +1, note="主人复活")
 
     # ---------- 补丁区 ----------
     def save_patch(self, patch: dict) -> str:
@@ -200,4 +375,6 @@ class MemoryModule:
             "entries": len(self.entries),
             "patches": len(self.patches),
             "patches_active": sum(1 for p in self.patches if p["status"] == "active"),
+            "superseded": sum(1 for e in self.entries.values()
+                              if e.get("status") == SUPERSEDED),
         }
