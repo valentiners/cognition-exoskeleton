@@ -30,6 +30,8 @@ from pathlib import Path
 
 from .conflict import classify_conflict, pair_key
 from .curiosity import CuriosityQueue
+from .foresight import (ForesightState, InstinctStore, active_tags,
+                        match_tags, route, warning_text)
 from . import hypothesis as hypo_mod
 from .doctor import _keynorm, latest_profile
 from .growth import last_consolidation
@@ -110,6 +112,12 @@ class Session:
         self._conflict_debug = ""
         self._hypothesis_debug = ""
         self._guess_hypothesis_qid = None
+
+        # L3 前瞻推演（W6）：在线只做向量匹配；本能规则只由主人批准写入。
+        self.foresight_state = ForesightState(self.home / "foresight_state.json")
+        self.instinct = InstinctStore(self.home / "instinct_rules.json")
+        self._foresight_used = 0
+        self._turn_embedding = None
 
         self.ollama_host = (ollama_host or self.state.get("ollama_host")
                             or "http://localhost:11434")
@@ -302,6 +310,9 @@ class Session:
         self._knowledge_result = None
         self._conflict_debug = ""
         self._hypothesis_debug = ""
+        self._guess_hypothesis_qid = None
+        self._foresight_used = 0
+        self._turn_embedding = None
         self._maybe_consolidate()
         try:
             result = self._chat(text, image_b64)
@@ -317,6 +328,7 @@ class Session:
         result = self._decorate_knowledge(result)
         result = self._decorate_conflict(result)
         result = self._decorate_hypothesis(result)
+        result = self._foresight_decorate(result, text)
         self._save()
         return result
 
@@ -639,6 +651,26 @@ class Session:
                 return self._say("好，看来我猜错了，这个念头我先放下。")
             return self._say("唔……你是说对，还是不对呀？")
 
+        if kind == "foresight_confirm":
+            self.state["pending"] = None
+            if re.search(r"(确定|确认|继续|做吧|知道了|可以)", v) \
+                    and not re.search(r"(不|别|算了)", v):
+                return self._say("好，那我就不拦你了，你自己多当心。")
+            return self._say("好，那先别做，咱们再想想。")
+
+        if kind == "instinct_proposal":
+            self.state["pending"] = None
+            pid = p.get("pid", "")
+            draft = self.foresight_state.data["proposals"].get(pid)
+            if not draft:
+                return self._say("唔，这条提议好像已经不在啦。")
+            if as_yes(v) and not as_no(v):
+                self.instinct.approve(draft)
+                self.foresight_state.decide_proposal(pid, True)
+                return self._say("好，我就把这条记成规矩了，以后直接提醒你。")
+            self.foresight_state.decide_proposal(pid, False)
+            return self._say("好，那我不擅自把它当规矩。")
+
         if kind == "arbitrate":
             if value == "child" or re.search(r"子类|幼体|分支|小的", v):
                 self.state["pending"] = {"kind": "naming", "text": p["text"],
@@ -786,6 +818,78 @@ class Session:
                                     solved_source="master")
         except Exception as exc:
             print(f"[假设] GUESS 结算失败：{exc}", file=sys.stderr)
+
+    # ---------- L3 前瞻推演（W6） ----------
+    def _foresight_quota(self) -> int:
+        return {"quiet": 0, "normal": 1, "eager": 2}.get(
+            self.state.get("autonomy", "normal"), 1)
+
+    def _foresight_consume(self, text: str) -> dict | None:
+        """在线匹配：一次本地 embedding + 余弦，零 LLM；风险优先于机会。"""
+        if not (text or "").strip():
+            return None
+        try:
+            tags = active_tags(self.cog.memory)
+        except Exception:
+            return None
+        if not tags:
+            return None
+        vec = self._turn_embedding
+        if vec is None:
+            try:
+                vec = self.cog.embedder.embed(text)
+            except Exception:
+                return None
+        hits = match_tags(vec, self.cog.embedder, tags)
+        if not hits:
+            return None
+        best = route(hits)
+        if not best:
+            return None
+        tag = best["tag"]
+        if self.foresight_state.shown_today(tag.get("tag_id", "")):
+            return None
+        is_red = tag.get("type") == "risk" and tag.get("severity") == "red"
+        if not is_red:
+            if self.state.get("autonomy", "normal") == "quiet":
+                return None
+            if self._foresight_used >= self._foresight_quota():
+                return None
+            self._foresight_used += 1
+        self.foresight_state.mark_shown(tag.get("tag_id", ""))
+        self.foresight_state.register_hit(tag)
+        proposal = None
+        if tag.get("type") == "risk":
+            proposal = self.foresight_state.due_proposal(tag)
+        return {
+            "say": warning_text(tag),
+            "tag": tag,
+            "needs_confirm": bool(is_red and tag.get("irreversible")),
+            "proposal": proposal,
+        }
+
+    def _foresight_decorate(self, result: dict, text: str) -> dict:
+        out = self._foresight_consume(text)
+        if not out:
+            return result
+        tag = out["tag"]
+        result["say"] = (result.get("say", "") + "\n" + out["say"])
+        debug = (result.get("debug", "") or "").rstrip("；")
+        result["debug"] = ((debug + "；") if debug else "") + \
+            f"foresight={tag.get('severity') or tag.get('type')} " \
+            f"{tag.get('tag_id')}"
+        if out.get("needs_confirm") and not self.state.get("pending"):
+            self.state["pending"] = {"kind": "foresight_confirm",
+                                     "tag_id": tag.get("tag_id"),
+                                     "text": text, "at": _t.time()}
+        proposal = out.get("proposal")
+        if proposal and not self.state.get("pending"):
+            result["say"] = (result["say"] + "\n" +
+                             f"有件事想跟你商量：{proposal['if']}的时候，"
+                             f"我先提醒你「{proposal['then']}」，好不好？")
+            self.state["pending"] = {"kind": "instinct_proposal",
+                                     "pid": proposal["pid"], "at": _t.time()}
+        return result
 
     # ---------- 假设驱动型好奇（W5） ----------
     @staticmethod
@@ -1101,6 +1205,7 @@ class Session:
         """主人又提到同主题 → 唤醒在册好奇点（余弦 ≥ 0.62，复用标定值）。"""
         try:
             emb = self.cog.embedder.embed(text)
+            self._turn_embedding = emb
         except Exception:
             return
         try:

@@ -225,6 +225,15 @@ class OllamaBaseModel:
         except OSError:
             return None
 
+    # ---------- foresight extraction (W6) ----------
+    def foresight_tags(self, name: str, description: str) -> str | None:
+        """单条记忆 → 前瞻标签原始文本（只用于离线生成）。"""
+        try:
+            return self._generate(prompts.foresight_prompt(name, description),
+                                  timeout=180)
+        except OSError:
+            return None
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         prompt = prompts.image_prompt(hint)
         payload = {

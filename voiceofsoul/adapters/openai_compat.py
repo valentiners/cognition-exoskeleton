@@ -207,6 +207,12 @@ class OpenAICompatBaseModel:
         return self._text(prompts.survey_topics_prompt(log_text, days),
                           timeout=240)
 
+    # ---------- foresight extraction (W6) ----------
+    def foresight_tags(self, name: str, description: str) -> str | None:
+        """单条记忆 → 前瞻标签原始文本（只用于离线生成）。"""
+        return self._text(prompts.foresight_prompt(name, description),
+                          timeout=180)
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         if image_b64.startswith("data:"):
             image_url = image_b64

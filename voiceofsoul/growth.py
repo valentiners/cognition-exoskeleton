@@ -194,6 +194,15 @@ def consolidate(home, base, *, memory=None, temp=None, curiosity=None,
     except Exception as exc:
         print(f"[睡眠进程] 素材收集失败：{exc}", file=sys.stderr)
 
+    foresight_stats = {"entries": 0, "tags": 0, "calls": 0, "failed": 0}
+    if memory is not None:
+        try:
+            from .foresight import generate_for_today
+            foresight_stats = generate_for_today(
+                base, memory, getattr(memory, "embedder", None), now=now)
+        except Exception as exc:
+            print(f"[睡眠进程] 前瞻标签生成失败：{exc}", file=sys.stderr)
+
     journal = None
     if _has_material(digest):
         compose = getattr(base, "compose_journal", None)
@@ -203,7 +212,7 @@ def consolidate(home, base, *, memory=None, temp=None, curiosity=None,
             except Exception as exc:
                 print(f"[睡眠进程] 日记写作失败：{exc}", file=sys.stderr)
     result = {"date": today, "ran": True, "digest": digest,
-              "ok": journal is not None}
+              "ok": journal is not None, "foresight": foresight_stats}
     if journal is None:
         result["reason"] = "no_material" if not _has_material(digest) \
             else "compose_failed"

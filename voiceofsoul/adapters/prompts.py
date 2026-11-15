@@ -213,6 +213,63 @@ def parse_survey_topics(raw: str | None) -> list[dict]:
     return out
 
 
+# ------------------------------------------- foresight tags (W6)
+
+def foresight_prompt(name: str, description: str) -> str:
+    """W6 L3：对单条记忆做前瞻推演（机会向 + 风险向，不跨条目组合）。"""
+    return (
+        "请只针对下面这一条记忆做前瞻推演（不要跟其他记忆组合）：\n"
+        f"名称：{name}\n描述：{description}\n\n"
+        "输出 0~3 个标签，每行一个，用竖线分隔五个字段：\n"
+        "类型|场景|级别|不可逆|理由\n"
+        "- 类型：风险 或 机会\n"
+        "- 场景：一个具体、可向量化的使用场景（10~30 字），例如「深夜独自走偏僻小路」\n"
+        "- 级别：红/黄/蓝（仅风险填；红=人身/隐私/财务的严重风险）\n"
+        "- 不可逆：是/否（仅风险填）\n"
+        "- 理由：一句话，不要超过 60 字\n"
+        "没有明显场景就只输出「无」。不要输出其他文字。"
+    )
+
+
+def parse_foresight_tags(raw: str | None) -> list[dict]:
+    ans = (raw or "").strip()
+    if not ans or ans.strip("。.") == "无":
+        return []
+    out = []
+    for line in ans.splitlines():
+        line = line.strip().strip("-*• ").replace("**", "").strip()
+        if not line or ("|" not in line and "｜" not in line):
+            continue
+        parts = [p.strip() for p in re.split(r"[|｜]", line)]
+        if len(parts) < 5:
+            continue
+        kind, scene, level, irreversible, reason = parts[:5]
+        if "风险" in kind:
+            kind = "risk"
+        elif "机会" in kind or "适用" in kind:
+            kind = "applicability"
+        else:
+            continue
+        if not scene or len(scene) > 80:
+            continue
+        sev = None
+        if kind == "risk":
+            if "红" in level:
+                sev = "red"
+            elif "黄" in level:
+                sev = "yellow"
+            elif "蓝" in level:
+                sev = "blue"
+            else:
+                continue
+        out.append({"type": kind, "scene": scene, "severity": sev,
+                    "irreversible": "是" in irreversible,
+                    "reason": reason[:120]})
+        if len(out) >= 3:
+            break
+    return out
+
+
 def knowledge_probe_prompts(point: str, context: str = "") -> list[str]:
     """探测点 #13（W2）：同一知识点三种不同措辞的探测问法。
 
