@@ -167,6 +167,52 @@ def parse_conflict_kind(raw: str | None) -> dict | None:
     return None
 
 
+# ------------------------------------------- survey topic extraction (W4)
+
+def survey_topics_prompt(log_text: str, days: int) -> str:
+    """W4：从主人日志摘录里提取可公开考据的知识型主题（不复制原文）。"""
+    return (
+        f"下面是一位主人最近 {days} 天的日志摘录（按日期分段）。"
+        "请提取其中属于**公共知识**的主题——概念、事实、方法、原理一类，别人也能查证。\n"
+        "排除：人名、宠物名、私人事件、日程、情绪、项目内部代号、私人偏好。\n"
+        "每行输出：日期 | 主题 | 类型（知识/私人）\n"
+        "- 主题用 2-12 个字的通用名称，不要用原句；同一主题多次出现就多列几行（用于统计频率）\n"
+        "- 私人主题也要列出并标为「私人」，我会自己过滤掉\n"
+        "- 没有合适主题就只输出「无」\n"
+        "不要解释，不要输出其他文字。\n\n"
+        f"日志摘录：\n{log_text}"
+    )
+
+
+def parse_survey_topics(raw: str | None) -> list[dict]:
+    """解析提取结果，只保留类型为“知识”的条目；返回 [{date, topic}]。"""
+    ans = (raw or "").strip()
+    if not ans or ans.strip("。.") == "无":
+        return []
+    out = []
+    seen = set()
+    for line in ans.splitlines():
+        line = line.strip().strip("-*• ").replace("**", "").strip()
+        if not line or "|" not in line and "｜" not in line:
+            continue
+        parts = re.split(r"[|｜]", line)
+        if len(parts) < 2:
+            continue
+        date = parts[0].strip()
+        topic = parts[1].strip().strip("「」『』")
+        kind = parts[2].strip() if len(parts) > 2 else "知识"
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            continue
+        if "私人" in kind or not topic or len(topic) > 20:
+            continue
+        key = (date, topic)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"date": date, "topic": topic})
+    return out
+
+
 def knowledge_probe_prompts(point: str, context: str = "") -> list[str]:
     """探测点 #13（W2）：同一知识点三种不同措辞的探测问法。
 

@@ -216,6 +216,15 @@ class OllamaBaseModel:
             return None
         return prompts.parse_conflict_kind(raw)
 
+    # ---------- survey topic extraction (W4) ----------
+    def survey_topics(self, log_text: str, days: int = 30) -> str | None:
+        """日志摘录 → 主题清单原始文本（只用于 G1 批量报告）。"""
+        try:
+            return self._generate(prompts.survey_topics_prompt(log_text, days),
+                                  timeout=240)
+        except OSError:
+            return None
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         prompt = prompts.image_prompt(hint)
         payload = {

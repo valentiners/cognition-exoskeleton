@@ -136,6 +136,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc.add_argument("--no-images", action="store_true",
                        help="跳过图像体检项（desc_quality 记 skipped）")
 
+    p_sur = sub.add_parser(
+        "survey",
+        help="知识边界报告 G1：扫描最近日志、批量探测公共知识点"
+             "（不带 --yes 只打印预估，在确认前不消耗探测调用）")
+    _add_common(p_sur, suppress=True)
+    p_sur.add_argument("--days", type=int, default=30,
+                       help="回看天数（默认 30）")
+    p_sur.add_argument("--max-topics", type=int, default=15,
+                       help="主题上限（默认/最大 15）")
+    p_sur.add_argument("--yes", action="store_true",
+                       help="确认执行；不带时只返回预估")
+
     sub.add_parser("stats", help="输出与 GET /api/stats 相同的统计 JSON")
     return parser
 
@@ -256,6 +268,51 @@ def _run_doctor(args, cfg: dict) -> int:
     return 0
 
 
+def _run_survey(args, cfg: dict) -> int:
+    """知识边界报告 G1（W4）：先预估，--yes 才真正探测。"""
+    try:
+        if cfg["backend"] == "ollama":
+            ensure_ollama(cfg["ollama"])
+        else:
+            ensure_openai(cfg["api_base"], cfg["api_key"], cfg["base_model"])
+    except ApiAuthError as exc:
+        _print_error("api_auth", str(exc))
+        return 2
+    except ApiUnreachableError as exc:
+        _print_error("api_unreachable", str(exc))
+        return 2
+    except OSError as exc:
+        _print_error("ollama_unreachable", str(exc))
+        return 2
+
+    from .survey import run_survey
+
+    base = make_base_model(cfg["backend"], model=cfg["base_model"],
+                           host=cfg["ollama"], api_base=cfg["api_base"],
+                           api_key=cfg["api_key"])
+    result = run_survey(base, cfg["home"], days=max(1, args.days),
+                        max_topics=args.max_topics, confirm=args.yes,
+                        embedder_model=cfg["embedding_model"])
+    status = result.get("status")
+    if status == "no_logs":
+        say = f"最近 {max(1, args.days)} 天我没找到日志，没法画地图。"
+    elif status == "no_topics":
+        say = "日志里没挑出能公开考据的知识点，先不画了。"
+    elif status == "needs_confirm":
+        est = result["estimate"]
+        say = (f"我扫了最近 {max(1, args.days)} 天日志，挑出 {est['topics']} 个能公开考据的"
+               f"知识点，预计要 {est['probe_calls']} 次探测（缓存能省 {est['cache_hits']} 次；"
+               "主题提取本身用了 1 次调用）。你点头我再开跑——加 --yes 再执行一次。")
+    else:
+        rep = result["report"]
+        c = rep["counts"]
+        say = (f"地图画好了：🟢{c.get('KNOWN', 0)} 🟡{c.get('UNCERTAIN', 0)} "
+               f"🔵{c.get('NEW', 0)}，报告放在 {result['markdown_path']} 了。")
+    _print_json({"say": say, "actions": [], "debug": "",
+                 "survey": result})
+    return 0
+
+
 def _run_curiosity(session: Session, args) -> int:
     """好奇心子命令：list / mute <qid> / mode <quiet|normal|eager>。"""
     if args.action == "mode":
@@ -310,6 +367,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "doctor":
         # 体检只读：不构造 session / memory，直接探测 + 出报告。
         return _run_doctor(args, cfg)
+
+    if args.command == "survey":
+        # 知识边界报告只读日志 + 探测，不构造 session / memory（零写记忆）。
+        return _run_survey(args, cfg)
 
     try:
         if args.command in ("chat", "respond", "consolidate"):

@@ -201,6 +201,12 @@ class OpenAICompatBaseModel:
             observation, entry_a, entry_b))
         return prompts.parse_conflict_kind(raw)
 
+    # ---------- survey topic extraction (W4) ----------
+    def survey_topics(self, log_text: str, days: int = 30) -> str | None:
+        """日志摘录 → 主题清单原始文本（只用于 G1 批量报告）。"""
+        return self._text(prompts.survey_topics_prompt(log_text, days),
+                          timeout=240)
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         if image_b64.startswith("data:"):
             image_url = image_b64
