@@ -40,3 +40,4 @@ _test_knowledge_probe.py
 _test_l2_web.py
 output/
 _test_survey.py
+_test_hypothesis.py
