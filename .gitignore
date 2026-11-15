@@ -41,3 +41,6 @@ _test_l2_web.py
 output/
 _test_survey.py
 _test_hypothesis.py
+_test_foresight.py
+foresight_state.json
+instinct_rules.json
