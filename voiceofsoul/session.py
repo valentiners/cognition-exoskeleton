@@ -30,6 +30,7 @@ from pathlib import Path
 
 from .conflict import classify_conflict, pair_key
 from .curiosity import CuriosityQueue
+from . import hypothesis as hypo_mod
 from .doctor import _keynorm, latest_profile
 from .growth import last_consolidation
 from . import growth as _growth
@@ -107,6 +108,8 @@ class Session:
         # L2 近似冲突（W3）：软存疑按“同对”累计，跨进程保留。
         self.state.setdefault("conflict_soft_counts", {})
         self._conflict_debug = ""
+        self._hypothesis_debug = ""
+        self._guess_hypothesis_qid = None
 
         self.ollama_host = (ollama_host or self.state.get("ollama_host")
                             or "http://localhost:11434")
@@ -176,6 +179,9 @@ class Session:
             probe = self._knowledge_gate(name)
             if probe.get("verdict") == KNOWN:
                 return "这个我早就知道啦，不用再教我一遍，我记性好着呢～"
+            if probe.get("verdict") == UNCERTAIN and source == "master":
+                # W5：🟡 区可选生成假设（有证据才升级；可关）
+                self._propose_knowledge_hypothesis(name, desc, probe)
             content = {"描述": desc}
             if source == "web":
                 content.update({"来源": source_url or "", "source": "web"})
@@ -295,6 +301,7 @@ class Session:
         self._probe_used = 0
         self._knowledge_result = None
         self._conflict_debug = ""
+        self._hypothesis_debug = ""
         self._maybe_consolidate()
         try:
             result = self._chat(text, image_b64)
@@ -309,6 +316,7 @@ class Session:
             print(f"[好奇心] 本轮追加失败，已静默跳过：{exc}", file=sys.stderr)
         result = self._decorate_knowledge(result)
         result = self._decorate_conflict(result)
+        result = self._decorate_hypothesis(result)
         self._save()
         return result
 
@@ -383,7 +391,8 @@ class Session:
             print(f"[临时记忆] 遗忘了 {len(gone)} 件久未提起的事：{', '.join(gone)}",
                   file=sys.stderr)
         try:
-            self.curiosity.expire()   # 好奇队列 TTL / 静音解禁
+            changed = self.curiosity.expire()   # 好奇队列 TTL / 静音解禁
+            self._expire_hypotheses(changed)     # W5：假设过期纯静默
         except Exception as exc:
             print(f"[好奇队列] 过期检查失败：{exc}", file=sys.stderr)
 
@@ -512,10 +521,14 @@ class Session:
         if kind == "GUESS":
             self.state["topic"] = {"kind": "guess", "desc": text,
                                    "modality": modality, "guess": act["guess"],
-                                   "curiosity_qid": cqid, "at": _t.time()}
+                                   "curiosity_qid": cqid,
+                                   "hypothesis_qid": self._guess_hypothesis_qid,
+                                   "at": _t.time()}
             self.state["pending"] = {"kind": "guess", "text": text,
                                      "guess": act["guess"], "modality": modality,
-                                     "curiosity_qid": cqid, "at": _t.time()}
+                                     "curiosity_qid": cqid,
+                                     "hypothesis_qid": self._guess_hypothesis_qid,
+                                     "at": _t.time()}
             return self._say(f"嗯……让我猜猜，这是{act['guess']}？",
                              actions=[{"label": "对", "value": "yes"},
                                       {"label": "不对", "value": "no"}],
@@ -605,6 +618,27 @@ class Session:
             joined = "、".join(f"「{n}」" for n in names) or "它们"
             return self._say(f"唔……你是说{joined}是同一个，还是两个不同的呀？")
 
+        if kind == "hypothesis":
+            item = self.curiosity.get(p.get("qid", ""))
+            hypo = (item or {}).get("hypothesis")
+            if not isinstance(hypo, dict):
+                self.state["pending"] = None
+                return self._say("唔，刚才那个猜想好像已经不在啦。")
+            if as_yes(v) and not as_no(v):
+                hypo_mod.confirm(hypo, self.cog.memory, source="master")
+                self.curiosity.mark(p["qid"], "answered", hypothesis=hypo,
+                                    solved_source="master")
+                self.state["pending"] = None
+                return self._say("好，那我就按这个记下啦。")
+            if as_no(v):
+                hypo_mod.refute(hypo, self.cog.memory, note=v[:40],
+                                source="master")
+                self.curiosity.mark(p["qid"], "refuted", hypothesis=hypo,
+                                    solved_source="master")
+                self.state["pending"] = None
+                return self._say("好，看来我猜错了，这个念头我先放下。")
+            return self._say("唔……你是说对，还是不对呀？")
+
         if kind == "arbitrate":
             if value == "child" or re.search(r"子类|幼体|分支|小的", v):
                 self.state["pending"] = {"kind": "naming", "text": p["text"],
@@ -629,6 +663,7 @@ class Session:
         if kind == "guess":
             if value == "no" or (as_no(v) and not as_yes(v)):
                 self.state["pending"] = None
+                self._settle_guess_hypothesis(p, False)
                 return self._say("啊，猜错了……那先不记，等你想教我的时候再说。")
             # 闸口 1：GUESS 分支确认回环
             self.state["pending"] = {"kind": "gate1", "text": p["text"],
@@ -644,12 +679,14 @@ class Session:
                     (as_yes(v) and not as_no(v) and len(v) <= 4):
                 self.state["pending"] = None
                 self._resolve_curiosity(p)
+                self._settle_guess_hypothesis(p, True)
                 return self._say("好～常识就不占用我的记忆了。")
             m = re.match(r"^(叫|named\s*)\s*(.+)$", v, re.IGNORECASE)
             if m:
                 self.state["pending"] = {"kind": "named_desc", "name": m.group(2).strip(),
                                          "guess": guess,
                                          "curiosity_qid": p.get("curiosity_qid"),
+                                         "hypothesis_qid": p.get("hypothesis_qid"),
                                          "modality": p.get("modality", "text")}
                 self._resolve_curiosity(p)
                 return self._say(f"好呀，那「{m.group(2).strip()}」是什么样的呢？简单说说特征就行。")
@@ -657,12 +694,14 @@ class Session:
                                        patch_type="feature_addition")
             self.state["pending"] = None
             self._resolve_curiosity(p)
+            self._settle_guess_hypothesis(p, True)
             return self._say(f"记下啦，作为小补丁（{pid}）挂在「{guess}」下面～")
 
         if kind == "named_desc":
             self.state["pending"] = None
             self.state["topic"] = None
             self._resolve_curiosity(p)
+            self._settle_guess_hypothesis(p, True)
             name = p["name"]
             desc = f"{name}，{value.strip()}"
             if p.get("parent"):
@@ -706,6 +745,183 @@ class Session:
         except Exception as exc:
             print(f"[好奇队列] 结案失败：{exc}", file=sys.stderr)
 
+    def _propose_guess_hypothesis(self, act: dict, text: str) -> str | None:
+        """T2 低置信 GUESS → 身份/类别假设；验证复用已有的“让我猜猜”提问。"""
+        guess = act.get("guess", "")
+        if not guess:
+            return None
+        target = next((eid for eid, e in self.cog.memory.entries.items()
+                       if e.get("name") == guess
+                       and self.cog.memory._retrievable(e)), None)
+        evidence = [
+            {"type": "observation", "ref": text[:60], "note": "新观察"},
+            {"type": "threshold", "ref": str(act.get("confidence")),
+             "note": "GUESS 低于好奇档"},
+        ]
+        return self._new_hypothesis(
+            f"这次看到的应该是「{guess}」",
+            float(act.get("confidence") or 0.0), evidence,
+            "master", target_entry_id=target, subject=guess,
+            question=f"这是「{guess}」吗？")
+
+    def _settle_guess_hypothesis(self, pending: dict, confirmed: bool):
+        """GUESS 闸口结算时同步结算关联假设（复用票箱，不新增逻辑）。"""
+        qid = (pending or {}).get("hypothesis_qid")
+        if not qid:
+            return
+        item = self.curiosity.get(qid)
+        hypo = (item or {}).get("hypothesis")
+        if not isinstance(hypo, dict):
+            return
+        if hypo.get("hypo_status") not in ("proposed", "verifying"):
+            return
+        try:
+            if confirmed:
+                hypo_mod.confirm(hypo, self.cog.memory, source="master")
+                self.curiosity.mark(qid, "answered", hypothesis=hypo,
+                                    solved_source="master")
+            else:
+                hypo_mod.refute(hypo, self.cog.memory, source="master")
+                self.curiosity.mark(qid, "refuted", hypothesis=hypo,
+                                    solved_source="master")
+        except Exception as exc:
+            print(f"[假设] GUESS 结算失败：{exc}", file=sys.stderr)
+
+    # ---------- 假设驱动型好奇（W5） ----------
+    @staticmethod
+    def _hypothesis_enabled() -> bool:
+        raw = os.environ.get("COGSOUL_HYPOTHESIS", "1").strip().lower()
+        return raw not in ("0", "false", "off", "no")
+
+    def _new_hypothesis(self, statement: str, confidence: float,
+                        evidence: list, plan: str, *, question: str = "",
+                        target_entry_id: str | None = None,
+                        subject: str = "", pair: str = "") -> str | None:
+        """校验并入队一个假设；无证据/陈述过泛一律不升级（出生证明铁律）。"""
+        if not self._hypothesis_enabled():
+            return None
+        try:
+            hypo = hypo_mod.build(statement, confidence, evidence, plan,
+                                  target_entry_id=target_entry_id,
+                                  subject=subject)
+        except ValueError as exc:
+            print(f"[假设] 不升级：{exc}", file=sys.stderr)
+            return None
+        if pair:
+            hypo["pair"] = pair
+        hypo["hid"] = self.curiosity.next_hypothesis_id()
+        tier = "L1" if plan == "master" else "WAIT"
+        try:
+            qid = self.curiosity.add(question or statement, "HYPOTHESIS",
+                                    statement, dedupe=False)
+            self.curiosity.mark(qid, "open", hypothesis=hypo, tier_due=tier)
+        except Exception as exc:
+            print(f"[假设] 入队失败：{exc}", file=sys.stderr)
+            return None
+        self._hypothesis_debug = (f"{hypo['hid']} {plan} "
+                                  f"conf={hypo['confidence']}")
+        if plan == "web":
+            self._verify_hypothesis_web(qid)
+        return qid
+
+    def _open_hypotheses(self) -> list[dict]:
+        return [i for i in self.curiosity.items.values()
+                if isinstance(i.get("hypothesis"), dict)
+                and i.get("status") == "open"]
+
+    def _propose_knowledge_hypothesis(self, name: str, desc: str,
+                                      probe: dict):
+        """🟡 区（W2 UNCERTAIN）→ 知识型假设，先查后问。"""
+        statement = f"「{name}」的意思是：{(desc or name)[:60]}"
+        if any(h["hypothesis"].get("statement") == statement
+               for h in self._open_hypotheses()):
+            return
+        evidence = [
+            {"type": "probe", "ref": probe.get("key", name),
+             "note": f"知识探测 UNCERTAIN（{probe.get('consistent')} 答一致）"},
+            {"type": "master", "ref": name, "note": "主人刚提到这个知识点"},
+        ]
+        self._new_hypothesis(statement, 0.55, evidence, "web",
+                             question=f"我好像知道一点「{name}」，但不太确定，"
+                                      "我去查一下好吗？",
+                             subject=name)
+
+    def _propose_conflict_hypothesis(self, a: str, b: str, stimulus: str):
+        """软存疑带的分叉旁路：挂一个**静默**假设（W3 零打扰不变），3 次升级硬冲突。"""
+        ea = self.cog.memory.entries.get(a) or {}
+        eb = self.cog.memory.entries.get(b) or {}
+        name_a, name_b = ea.get("name", a), eb.get("name", b)
+        key = pair_key(a, b)
+        if any(h["hypothesis"].get("pair") == key
+               for h in self._open_hypotheses()):
+            return
+        statement = f"「{name_a}」和「{name_b}」可能是同一个人"
+        evidence = [
+            {"type": "memory", "ref": a, "note": name_a},
+            {"type": "memory", "ref": b, "note": name_b},
+            {"type": "observation", "ref": stimulus[:60], "note": "新观察"},
+        ]
+        # 软存疑必须零输出（W3 拍板）：先挂 wait，等未来相遇/升级硬冲突再动
+        self._new_hypothesis(statement, 0.5, evidence, "wait", pair=key,
+                             question=f"「{name_a}」和「{name_b}」是不是同一个呀？",
+                             subject=name_a)
+
+    def _verify_hypothesis_web(self, qid: str):
+        """web 通道：复用 §4.9 先查后问；查得到且可信才确认。"""
+        item = self.curiosity.get(qid)
+        if not item:
+            return
+        hypo = item.get("hypothesis") or {}
+        query_fn = getattr(self.cog.base, "curiosity_query", None)
+        distill_fn = getattr(self.cog.base, "curiosity_distill", None)
+        if not (query_fn and distill_fn):
+            return
+        try:
+            query = query_fn(hypo.get("statement", ""), item.get("stimulus", ""))
+            if not query:
+                return
+            hits = web_search(query)
+            if not hits:
+                return
+            fact = distill_fn(hypo.get("statement", ""), hits)
+            if not fact:
+                return
+            url = (hits[0].get("url") or "").strip()
+            ok, entry_id = self._store_web_fact_ex(fact["name"],
+                                                  fact["fact"], url)
+            if not ok:
+                return
+            hypo_mod.confirm(hypo, self.cog.memory, entry_id=entry_id,
+                             source="web")
+            self.curiosity.mark(qid, "answered", hypothesis=hypo,
+                                solved_source="web", solved_url=url)
+            self._hypothesis_debug = (f"{hypo.get('hid')} confirmed via web")
+        except Exception as exc:
+            print(f"[假设] web 验证失败：{exc}", file=sys.stderr)
+
+    def _expire_hypotheses(self, qids: list[str]):
+        """TTL 到期：纯静默标记，不提示、不进日记。"""
+        for qid in qids:
+            item = self.curiosity.get(qid)
+            hypo = (item or {}).get("hypothesis")
+            if not isinstance(hypo, dict):
+                continue
+            if hypo.get("hypo_status") not in ("proposed", "verifying"):
+                continue
+            try:
+                hypo_mod.transition(hypo, "expired", result="expired")
+                self.curiosity.mark(qid, "expired", hypothesis=hypo)
+            except ValueError:
+                pass
+
+    def _decorate_hypothesis(self, result: dict) -> dict:
+        if not self._hypothesis_debug:
+            return result
+        debug = (result.get("debug", "") or "").rstrip("；")
+        result["debug"] = ((debug + "；") if debug else "") + \
+            f"hypothesis={self._hypothesis_debug}"
+        return result
+
     # ---------- L2 织网与信念修正（W3） ----------
     def _check_conflict(self, act: dict, text: str):
         """检索判定后（§2.1 末段）：两级近似冲突侦测。"""
@@ -729,6 +945,8 @@ class Session:
             if counts[key] < 3:
                 self._conflict_debug = (f"soft {key} gap={info['gap']} "
                                         f"count={counts[key]}")
+                # W5：软存疑分叉旁路——先挂假设验证，升级路径不变
+                self._propose_conflict_hypothesis(a, b, text)
                 return
             counts[key] = 0
             info = {**info, "level": "hard", "escalated": True}
@@ -773,9 +991,18 @@ class Session:
             question = (f"「{name_a}」和「{name_b}」的说法好像对不上，"
                         "哪个才是对的呀？")
         try:
-            qid = self.curiosity.add(question, "CONFLICT", text)
-            self.curiosity.mark(qid, "open", conflict_ids=[a, b],
-                                conflict_kind=kind, tier_due="L1")
+            existing = next((i for i in self.curiosity.items.values()
+                             if i.get("source_trigger") == "CONFLICT"
+                             and set(i.get("conflict_ids") or []) == {a, b}
+                             and i.get("status") == "open"), None)
+            if existing:
+                qid = existing["qid"]
+                self.curiosity.mark(qid, "open", tier_due="L1")
+            else:
+                qid = self.curiosity.add(question, "CONFLICT", text,
+                                         dedupe=False)
+                self.curiosity.mark(qid, "open", conflict_ids=[a, b],
+                                    conflict_kind=kind, tier_due="L1")
         except Exception as exc:
             print(f"[冲突侦测] 质疑任务入队失败：{exc}", file=sys.stderr)
             return
@@ -904,6 +1131,7 @@ class Session:
         """T1/T2 触发 + T3/T4 扫描；返回本轮入队（或命中在册）的 qid。"""
         kind = act.get("action")
         qid = None
+        self._guess_hypothesis_qid = None
         try:
             created = False
             if kind == "UNKNOWN":
@@ -914,6 +1142,10 @@ class Session:
                 qid, created = self._new_point(
                     f"我猜它是{act.get('guess', '')}，可实在不太确定……它到底是什么呀？",
                     "T2", text)
+                if created:
+                    # W5：GUESS 升级为假设（复用既有猜问，不额外问一遍）
+                    self._guess_hypothesis_qid = self._propose_guess_hypothesis(
+                        act, text)
             if qid and created:
                 self._curiosity_self_solve(qid, text)
             if kind in ("DIRECT", "RECOGNIZED") and self._t34_enabled():
@@ -963,12 +1195,19 @@ class Session:
 
     def _store_web_fact(self, name: str, fact: str, url: str) -> bool:
         """web 知识入库：复用 _finish_entry 的三道闸口，绝不自建新通道（§4.8）。"""
+        return self._store_web_fact_ex(name, fact, url)[0]
+
+    def _store_web_fact_ex(self, name: str, fact: str,
+                           url: str) -> tuple[bool, str | None]:
+        """同 _store_web_fact，额外返回新建条目 id（假设转正需要出生证明）。"""
         name = (name or "").strip()
         fact = (fact or "").strip()
         if not name or not fact:
-            return False
+            return False, None
+        before = set(self.cog.memory.entries)
         self._finish_entry(name, fact, source="web", source_url=url or None)
-        return True
+        new = [eid for eid in self.cog.memory.entries if eid not in before]
+        return True, (new[0] if new else None)
 
     def _scan_t34(self, act: dict, text: str, desc: str | None):
         """探测点 #10：感知矛盾（T3）/ 陌生专名（T4）。默认关闭。"""
@@ -1063,6 +1302,15 @@ class Session:
                     "curiosity_qid": item["qid"],
                     "at": _t.time(),
                 }
+            if isinstance(item.get("hypothesis"), dict) \
+                    and item["hypothesis"].get("plan") == "master":
+                self.state["pending"] = {
+                    "kind": "hypothesis",
+                    "qid": item["qid"],
+                    "text": item.get("stimulus", ""),
+                    "curiosity_qid": item["qid"],
+                    "at": _t.time(),
+                }
             asked.append(self._curiosity_phrase(item))
         if asked:
             return "\n".join(asked)
@@ -1081,6 +1329,8 @@ class Session:
             return f"对了，{question}"
         if trigger == "CONFLICT":
             return f"对了，有件事我拿不准——{question}"
+        if trigger == "HYPOTHESIS":
+            return f"对了，我有个猜想想跟你确认一下——{question}"
         return f"对了，还有件事我挺好奇的——{question}"
 
     def _curiosity_l2(self) -> str:

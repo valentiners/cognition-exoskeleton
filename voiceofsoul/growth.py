@@ -79,6 +79,9 @@ def collect_digest(memory, temp, curiosity, *, now: datetime | None = None) -> d
     for item in curiosity.items.values():
         if str(item.get("created_at", "")).startswith(today):
             st = item.get("status", "open")
+            # W5：假设过期纯静默，不进日记
+            if item.get("source_trigger") == "HYPOTHESIS" and st == "expired":
+                continue
             curious_today[st] = curious_today.get(st, 0) + 1
     temp_today = sum(1 for r in temp.records.values()
                      if str(r.get("first_seen", "")).startswith(today))

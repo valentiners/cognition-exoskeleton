@@ -29,8 +29,10 @@ from pathlib import Path
 
 TTL_DAYS = 7          # 与 TempMemory.TTL_DAYS 同值（标定值，勿动）
 MATCH_TH = 0.62       # 复用 TempMemory.MATCH_TH（标定值，勿动）
-STATUSES = ("open", "self_solved", "answered", "muted", "expired")
-TRIGGERS = ("T1", "T2", "T3", "T4", "CONFLICT")   # CONFLICT = L2 近似冲突质疑（W3）
+STATUSES = ("open", "self_solved", "answered", "muted", "expired",
+            "refuted")   # refuted = 假设被证伪（W5）
+TRIGGERS = ("T1", "T2", "T3", "T4", "CONFLICT",
+            "HYPOTHESIS")   # CONFLICT=L2 冲突质疑；HYPOTHESIS=假设型（W5）
 
 
 def _now_iso(now: datetime | None = None) -> str:
@@ -52,22 +54,31 @@ class CuriosityQueue:
         self.embedder = embedder
         self.items: dict[str, dict] = {}
         self._n = 0
+        self._h = 0
         if self.path.exists():
             try:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
                 self.items = data.get("items", {}) or {}
                 self._n = int(data.get("counter", 0) or 0)
+                self._h = int(data.get("hypo_counter", 0) or 0)
             except (OSError, ValueError, TypeError):
                 # 队列损坏不能拖垮对话：从空队列起步，磁盘旧文件不删。
-                self.items, self._n = {}, 0
+                self.items, self._n, self._h = {}, 0, 0
 
     # ---------- 持久化 ----------
     def _persist(self):
         tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps({"counter": self._n, "items": self.items},
+        tmp.write_text(json.dumps({"counter": self._n, "hypo_counter": self._h,
+                                  "items": self.items},
                                   ensure_ascii=False, indent=2),
                        encoding="utf-8")
         tmp.replace(self.path)
+
+    def next_hypothesis_id(self) -> str:
+        """假设编号（H-xxxx），与好奇点编号同文件持久化。"""
+        self._h += 1
+        self._persist()
+        return f"H-{self._h:04d}"
 
     # ---------- 向量 ----------
     def _embed(self, text: str) -> list[float] | None:
@@ -99,14 +110,15 @@ class CuriosityQueue:
         return best
 
     # ---------- 生命周期 ----------
-    def add(self, point: str, trigger: str, stimulus: str) -> str:
-        """新增一个好奇点；同主题已在册则只唤醒旧条目（不重复入队）。"""
+    def add(self, point: str, trigger: str, stimulus: str,
+            dedupe: bool = True) -> str:
+        """新增一个好奇点；同主题已在册则只唤醒旧条目（dedupe=False 可跳过）。"""
         point = (point or "").strip()
         if not point:
             raise ValueError("curiosity point must not be empty")
         if trigger not in TRIGGERS:
             raise ValueError(f"unknown trigger: {trigger!r}")
-        existing = self.find_similar(stimulus or point)
+        existing = self.find_similar(stimulus or point) if dedupe else None
         if existing:
             existing["hit_count"] = int(existing.get("hit_count", 0)) + 1
             existing["last_hit_at"] = _now_iso()
