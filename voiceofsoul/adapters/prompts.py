@@ -137,6 +137,26 @@ def curiosity_distill_prompt(point: str, snippets: list[dict]) -> str:
     )
 
 
+def knowledge_probe_prompts(point: str, context: str = "") -> list[str]:
+    """探测点 #13（W2）：同一知识点三种不同措辞的探测问法。
+
+    纪律：只问基础模型“你本来会不会”，**不得把待学内容本身喂进提示词**
+    （否则测的是阅读理解，不是权重里的知识）。三种措辞尽量拉开，
+    用三答一致性作为“真的知道”的行为证据（设计 §1.7 L1）。
+    """
+    point = (point or "").strip()
+    ctx = f"\n相关背景：{context.strip()}" if (context or "").strip() else ""
+    return [
+        f"请只凭你已有的知识回答：{point} 是什么？{ctx}\n"
+        "按三行输出：\n名称: ...\n类别: ...\n关键事实: ...\n"
+        "如果你不确定或不知道，只输出「不了解」，不要猜测。",
+        f"换个问法确认一下：关于「{point}」，你掌握哪些信息？{ctx}\n"
+        "知道就按三行输出（名称/类别/关键事实），不知道就只输出「不了解」。",
+        f"最后再确认一次：{point} 属于什么类别、有什么关键事实或数值？{ctx}\n"
+        "只输出三行结构化答案；不确定就只输出「不了解」。",
+    ]
+
+
 def image_prompt(hint: str = "") -> str:
     prompt = (
         "请观察图片，用一段简洁的中文文字描述图中的主体事物。\n"
@@ -325,6 +345,58 @@ def parse_curiosity_fact(raw: str | None) -> dict | None:
     if any(k in fact for k in ("无法", "不知道", "不确定", "不了解")):
         return None
     return {"name": name, "fact": fact}
+
+
+# ------------------------------------------- knowledge probe (#13) parsers
+
+_UNSURE_MARKERS = ("不了解", "不知道", "无法确定", "不清楚", "没听说过",
+                   "无法回答", "无法判断", "不掌握", "没有相关")
+
+
+def parse_knowledge_answer(raw: str | None) -> dict:
+    """解析一条探测答复：名称 / 类别 / 关键事实。
+
+    模型不遵格式时整段作为关键事实（宁可多给信息，不因为格式失败误判）。
+    整段只表达“不知道”时 unsure=True。
+    """
+    ans = (raw or "").strip()
+    out = {"name": "", "category": "", "value": "",
+           "unsure": False, "raw": ans}
+    if not ans:
+        out["unsure"] = True
+        return out
+    short = len(ans) <= 40
+    if short and any(k in ans for k in _UNSURE_MARKERS):
+        out["unsure"] = True
+        return out
+
+    for line in ans.splitlines():
+        line = line.strip().strip("-*• ").replace("**", "").strip()
+        if not line:
+            continue
+        m = re.match(r"^(名称|名字|name)\s*[:：/＝=—]\s*(.+)$", line, re.IGNORECASE)
+        if m and not out["name"]:
+            out["name"] = m.group(2).strip().strip("「」『』")
+            continue
+        m = re.match(r"^(类别|分类|type|category)\s*[:：/＝=—]\s*(.+)$", line,
+                     re.IGNORECASE)
+        if m and not out["category"]:
+            out["category"] = m.group(2).strip().strip("「」『』")
+            continue
+        m = re.match(r"^(关键事实|事实|数值|特征|fact|value)\s*[:：/＝=—]\s*(.+)$",
+                     line, re.IGNORECASE)
+        if m and not out["value"]:
+            out["value"] = m.group(2).strip()
+    if not (out["name"] or out["category"] or out["value"]):
+        # 模型不遵标签格式但用了“名/类/事实”斜杠分隔（实测 gemma4 常见）
+        parts = [p.strip() for p in ans.split("/") if p.strip()]
+        if 2 <= len(parts) <= 3 and len(ans.splitlines()) == 1:
+            out["name"] = parts[0]
+            out["category"] = parts[1] if len(parts) > 1 else ""
+            out["value"] = parts[2] if len(parts) > 2 else ""
+        else:
+            out["value"] = ans      # 整段入槽，宁松不严
+    return out
 
 
 def clean_image_description(raw: str | None) -> str:

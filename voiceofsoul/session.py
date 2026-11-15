@@ -29,9 +29,11 @@ from datetime import datetime
 from pathlib import Path
 
 from .curiosity import CuriosityQueue
-from .doctor import latest_profile
+from .doctor import _keynorm, latest_profile
 from .growth import last_consolidation
 from . import growth as _growth
+from .knowledge import (KNOWN, UNCERTAIN, KnowledgeProbeCache,
+                        judge_answers)
 from .memory import is_dormant
 from .tools.web import web_search
 
@@ -95,6 +97,12 @@ class Session:
                                         getattr(cog, "embedder", None))
         self._curiosity_note = ""   # 本轮自学成果的拟人汇报，注入回复用
 
+        # 知识边界探测（探测点 #13 / W2）：结论缓存 30 天，跨进程保留。
+        self.knowledge_cache = KnowledgeProbeCache(
+            self.home / "knowledge_probe_cache.json")
+        self._probe_used = 0        # 本轮已用探测额度
+        self._knowledge_result = None  # 本轮探测结论（供 debug）
+
         self.ollama_host = (ollama_host or self.state.get("ollama_host")
                             or "http://localhost:11434")
         self.state["ollama_host"] = self.ollama_host
@@ -149,12 +157,19 @@ class Session:
     def _finish_entry(self, name: str, desc: str, modality: str = "text",
                       source: str = "master",
                       source_url: str | None = None) -> str:
-        """闸口 2（公共/私人自检）+ 闸口 3（建库前去重）。
+        """闸口 2（公共/私人自检）+ 知识边界探测（#13）+ 闸口 3（建库前去重）。
 
         source/source_url 只影响入库留痕（§4.9 来源纪律），闸口逻辑唯一：
         主人教的与 web 自学的事实走同一条管线、同一套标准。
+
+        知识边界探测（W2）：只有闸口 2 判定为“公共知识”时才探
+        “基础模型本来会不会”——身份/主人私有实体永不触发（它们必须走记忆通道）。
+        KNOWN → 不入库（记忆卫生）；UNCERTAIN / NEW → 照常走后续流程（偏向记）。
         """
         if self.cog.is_common_knowledge(name, desc):
+            probe = self._knowledge_gate(name)
+            if probe.get("verdict") == KNOWN:
+                return "这个我早就知道啦，不用再教我一遍，我记性好着呢～"
             content = {"描述": desc}
             if source == "web":
                 content.update({"来源": source_url or "", "source": "web"})
@@ -271,6 +286,8 @@ class Session:
 
     def chat(self, text: str, image_b64: str | None = None) -> dict:
         self._curiosity_note = ""
+        self._probe_used = 0
+        self._knowledge_result = None
         self._maybe_consolidate()
         try:
             result = self._chat(text, image_b64)
@@ -283,6 +300,7 @@ class Session:
             result = self._curiosity_decorate(result)
         except Exception as exc:
             print(f"[好奇心] 本轮追加失败，已静默跳过：{exc}", file=sys.stderr)
+        result = self._decorate_knowledge(result)
         self._save()
         return result
 
@@ -504,11 +522,14 @@ class Session:
 
     # ---------- 回答未决流程 ----------
     def respond(self, value: str) -> dict:
+        self._probe_used = 0
+        self._knowledge_result = None
         try:
             result = self._respond(value)
         except Exception:
             self.state = self._load()
             raise
+        result = self._decorate_knowledge(result)
         self._save()
         return result
 
@@ -626,6 +647,70 @@ class Session:
             self.curiosity.mark(qid, status, solved_source=source)
         except Exception as exc:
             print(f"[好奇队列] 结案失败：{exc}", file=sys.stderr)
+
+    # ---------- 知识边界探测（探测点 #13 / W2） ----------
+    def _probe_quota(self) -> int:
+        """本轮探测额度（计入 §4.7 自主额度体系）。
+
+        quiet=0（不主动探测，按“偏向记”处理）/ normal=1 / eager=2。
+        缓存命中不耗额度（不产生 LLM 调用）。
+        """
+        mode = self.state.get("autonomy", "normal")
+        return {"quiet": 0, "normal": 1, "eager": 2}.get(mode, 1)
+
+    def _knowledge_gate(self, point: str) -> dict:
+        """三问一致性探测一个知识点；任何失败都退化为 UNCERTAIN（偏向记）。"""
+        key = _keynorm(point) or (point or "").strip().lower()
+        cached = self.knowledge_cache.get(key)
+        if cached:
+            res = dict(cached)
+            res.update({"cached": True, "key": key})
+            self._knowledge_result = res
+            return res
+
+        if self._probe_used >= self._probe_quota():
+            res = {"verdict": UNCERTAIN, "reason": "quota",
+                   "cached": False, "key": key}
+            self._knowledge_result = res
+            return res
+
+        probe = getattr(self.cog.base, "knowledge_probe", None)
+        if not probe:
+            res = {"verdict": UNCERTAIN, "reason": "unsupported",
+                   "cached": False, "key": key}
+            self._knowledge_result = res
+            return res
+
+        self._probe_used += 1
+        try:
+            answers = probe(point)   # 只给知识点名字：不把待学内容喂进提示词
+        except Exception as exc:
+            print(f"[知识探测] 调用失败，按偏向记处理：{exc}", file=sys.stderr)
+            res = {"verdict": UNCERTAIN, "reason": "probe_failed",
+                   "cached": False, "key": key}
+            self._knowledge_result = res
+            return res
+
+        judged = judge_answers(answers)
+        self.knowledge_cache.put(key, judged)
+        res = dict(judged)
+        res.update({"cached": False, "key": key})
+        self._knowledge_result = res
+        return res
+
+    def _decorate_knowledge(self, result: dict) -> dict:
+        """把本轮探测结论与累计分布写进 debug（机制标签绝不进主文案）。"""
+        kp = self._knowledge_result
+        if not kp:
+            return result
+        st = self.knowledge_cache.stats_snapshot()
+        part = (f"knowledge={kp.get('verdict')}"
+                + ("(cached)" if kp.get("cached") else "")
+                + f" reason={kp.get('reason', '')}"
+                + f" K/U/N={st['known']}/{st['uncertain']}/{st['new']}")
+        debug = (result.get("debug", "") or "").rstrip("；")
+        result["debug"] = (debug + "；" if debug else "") + part
+        return result
 
     # ---------- 好奇心（§4.6~§4.9） ----------
     def set_autonomy(self, mode: str) -> str:

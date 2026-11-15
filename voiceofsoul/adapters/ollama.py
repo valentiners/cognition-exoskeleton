@@ -199,6 +199,12 @@ class OllamaBaseModel:
             return None
         return prompts.parse_journal(raw)
 
+    # ---------- probe #13: knowledge boundary (W2) ----------
+    def knowledge_probe(self, point: str, context: str = "") -> list[str]:
+        """同一知识点三种措辞各问一次，返回 3 条原始答复（与提示词顺序一致）。"""
+        return [self._generate(prompt)
+                for prompt in prompts.knowledge_probe_prompts(point, context)]
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         prompt = prompts.image_prompt(hint)
         payload = {
