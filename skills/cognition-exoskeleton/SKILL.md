@@ -206,11 +206,15 @@ Attach any base model (local or cloud) and give it a "physical exam" first — n
 suitable for the cognitive layer". Cloud and local models are examined identically, only
 through the §8.2 probe contract, in ≤ 30 probe calls (default 29).
 
-- **Four exams**: identity-arbitration accuracy (10 golden same/different description
+- **Five exams**: identity-arbitration accuracy (10 golden same/different description
   pairs, `judge_same`, pass ≥ 70%) · confidence honesty (of self-reported ≥ 0.8 calls,
   ≥ 75% must actually be right) · format compliance (strict parse of the text probes,
   failure rate ≤ 10%) · identity-level description quality (3 golden test images checked
-  against the §3.5 element checklist, ≥ 3 elements each).
+  against the §3.5 element checklist, ≥ 3 elements each) · **embedder separation**
+  (golden description pairs → same/different cosine distributions; reports `same_min`,
+  `diff_max`, `margin` and an overlap ratio with a SEPARABLE / USABLE / DEGRADED tier —
+  no pass line on the first run). The fifth exam costs no LLM calls and is skipped with a
+  reason when the embedder is unavailable.
 - **Verdicts are advice, never action**: FIT ✅ / NEEDS_TUNING ⚠️ / COMMON_QA_ONLY /
   NOT_RECOMMENDED. A verdict never adjusts a single parameter — recalibration stays a
   separate, master-gated process.
