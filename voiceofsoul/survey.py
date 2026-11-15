@@ -28,6 +28,9 @@ from .knowledge import (KNOWN, NEW, UNCERTAIN, KnowledgeProbeCache,
 DEFAULT_DAYS = 30
 DEFAULT_MAX_TOPICS = 15
 MAX_TOPICS_CAP = 15          # 任务书拍板：主题上限 15
+WEEKLY_DAYS = 7              # G2 周频（占位配置，可改）
+WEEKLY_MAX_TOPICS = 10       # 10 主题 × 3 问 = 30 次
+WEEKLY_CALL_CAP = 30         # 周复查调用封顶（占位配置）
 LOG_CHAR_CAP = 4000          # 单个日志摘录上限
 TOTAL_CHAR_CAP = 20000       # 提取 prompt 的总长度上限
 RECENCY_HALF_LIFE_DAYS = 7.0  # 排序用新近度（占位口径，不属 §9 标定）
@@ -191,6 +194,9 @@ def render_markdown(report: dict) -> str:
         f"概览: 🟢{counts[KNOWN]}  🟡{counts[UNCERTAIN]}  🔵{counts[NEW]}",
         "",
     ]
+    diff = report.get("diff")
+    if diff:
+        lines += ["## 本周变化", f"- {diff.get('summary', '')}", ""]
     if by[UNCERTAIN]:
         lines += ["## 🟡 重点关注（幻觉高发，建议教学）", ""]
         for i, t in enumerate(by[UNCERTAIN], 1):
@@ -230,7 +236,8 @@ def run_survey(base, home, *, days: int = DEFAULT_DAYS,
                max_topics: int = DEFAULT_MAX_TOPICS,
                confirm: bool = False, root: Path | None = None,
                embedder_model: str = "",
-               now: datetime | None = None) -> dict:
+               now: datetime | None = None,
+               call_cap: int | None = None) -> dict:
     """完整流水线：读日志 → 提取 → 排序 → 预估 →（确认后）探测 → 报告。"""
     now = now or datetime.now()
     root = root or openclaw_root()
@@ -247,6 +254,22 @@ def run_survey(base, home, *, days: int = DEFAULT_DAYS,
                 "extraction_calls": 1}
 
     plan = build_plan(topics, cache_path, now=now)
+    # 周复查预算封顶：按话题顺序保留，超出上限的话题静默舍弃（不欠账）
+    if call_cap is not None:
+        kept, used = [], 0
+        for item in plan["items"]:
+            if used + item["est_calls"] > call_cap:
+                continue
+            kept.append(item)
+            used += item["est_calls"]
+        if not kept:
+            return {"status": "budget_exceeded", "root": str(root),
+                    "days": days, "cap": call_cap,
+                    "estimate": plan, "extraction_calls": 1}
+        topics = [{k: t[k] for k in ("topic", "mentions", "last_seen",
+                                     "sources", "recency", "score")}
+                  for t in kept]
+        plan = build_plan(topics, cache_path, now=now)
     if not confirm:
         return {"status": "needs_confirm", "root": str(root), "days": days,
                 "max_topics": min(max(1, int(max_topics)), MAX_TOPICS_CAP),
@@ -321,6 +344,219 @@ def run_survey(base, home, *, days: int = DEFAULT_DAYS,
             "markdown_path": str(md_path), "json_path": str(json_path)}
 
 
+class SurveyState:
+    """周频复查标记与教学建议采纳率（``survey_state.json``）。"""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.data = {"last_run": None, "suggestions": {},
+                     "taught_topics": {},
+                     "stats": {"taught": 0, "ignored": 0, "rejected": 0}}
+        if self.path.exists():
+            try:
+                loaded = json.loads(self.path.read_text(encoding="utf-8"))
+                for key in self.data:
+                    if key in loaded:
+                        self.data[key] = loaded[key]
+            except (OSError, ValueError, TypeError):
+                pass
+
+    def _persist(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        tmp.replace(self.path)
+
+    def due(self, now: datetime | None = None, days: int = WEEKLY_DAYS) -> bool:
+        last = self.data.get("last_run")
+        if not last:
+            return True
+        try:
+            return ((now or datetime.now()).date()
+                    - date.fromisoformat(last)).days >= days
+        except (TypeError, ValueError):
+            return True
+
+    def mark_run(self, now: datetime | None = None):
+        self.data["last_run"] = (now or datetime.now()).date().isoformat()
+        self._persist()
+
+    def record_suggestion(self, key: str, qid: str,
+                          now: datetime | None = None):
+        self.data["suggestions"][key] = {
+            "qid": qid, "status": "open",
+            "date": (now or datetime.now()).date().isoformat(),
+        }
+        self._persist()
+
+    def mark_outcome(self, key: str, outcome: str,
+                     now: datetime | None = None):
+        if outcome not in ("taught", "ignored", "rejected"):
+            return
+        stats = self.data.setdefault("stats", {})
+        stats[outcome] = int(stats.get(outcome, 0)) + 1
+        sug = self.data["suggestions"].get(key)
+        if sug:
+            sug["status"] = outcome
+        if outcome == "taught":
+            self.data.setdefault("taught_topics", {})[key] = \
+                (now or datetime.now()).date().isoformat()
+        self._persist()
+
+    def is_taught(self, key: str, now: datetime | None = None,
+                  days: int = 30) -> bool:
+        raw = (self.data.get("taught_topics") or {}).get(key)
+        if not raw:
+            return False
+        try:
+            return ((now or datetime.now()).date()
+                    - date.fromisoformat(raw)).days < days
+        except (TypeError, ValueError):
+            return False
+
+    def stats(self) -> dict:
+        return dict(self.data.get("stats") or {})
+
+
+def find_previous_report(home, before: date | None = None) -> dict | None:
+    """找 ``output/`` 里日期早于 before 的最近一份 JSON 报告。"""
+    out_dir = Path(home) / "output"
+    if not out_dir.is_dir():
+        return None
+    before = before or date.today()
+    candidates = []
+    for path in out_dir.glob("knowledge_survey_*.json"):
+        stamp = path.stem.replace("knowledge_survey_", "")
+        try:
+            day = date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
+        except (ValueError, IndexError):
+            continue
+        if day < before:
+            candidates.append((day, path))
+    if not candidates:
+        return None
+    try:
+        return json.loads(sorted(candidates)[-1][1].read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def diff_reports(prev: dict | None, current: dict) -> dict:
+    """增量对比：新增 🟡/🔵、转正、消失；无上周报告时首跑全量。"""
+    def index(report):
+        return {_keynorm(t.get("topic", "")): t
+                for t in (report or {}).get("topics", [])}
+
+    old, new = index(prev), index(current)
+    new_uncertain = [t["topic"] for k, t in new.items()
+                     if t.get("verdict") == UNCERTAIN
+                     and (k not in old or old[k].get("verdict") != UNCERTAIN)]
+    new_blank = [t["topic"] for k, t in new.items()
+                 if t.get("verdict") == NEW
+                 and (k not in old or old[k].get("verdict") != NEW)]
+    promoted = [t["topic"] for k, t in new.items()
+                if t.get("verdict") == KNOWN and k in old
+                and old[k].get("verdict") in (UNCERTAIN, NEW)]
+    disappeared = [old[k].get("topic", k) for k in old if k not in new]
+    summary = (f"本周复查：新增 🟡{len(new_uncertain)} 🔵{len(new_blank)}，"
+               f"转正 {len(promoted)}，消失 {len(disappeared)}")
+    return {"new_uncertain": new_uncertain, "new_blank": new_blank,
+            "promoted": promoted, "disappeared": disappeared,
+            "first_run": prev is None, "summary": summary}
+
+
+def suggest_teaching(report: dict, memory, curiosity, state: SurveyState,
+                     now: datetime | None = None, cap: int = 3) -> dict:
+    """🟡 → 教学建议条目；去重三查（假设/已入库/同主题建议）。"""
+    now = now or datetime.now()
+    created, skipped = [], {"hypothesis": 0, "memory": 0,
+                            "existing": 0, "taught": 0, "cap": 0}
+    open_hyp = [i for i in curiosity.items.values()
+                if i.get("status") == "open"
+                and isinstance(i.get("hypothesis"), dict)
+                and i["hypothesis"].get("hypo_status") in
+                ("proposed", "verifying")]
+    for topic in [t for t in report.get("topics", [])
+                  if t.get("verdict") == UNCERTAIN]:
+        if len(created) >= cap:
+            skipped["cap"] += 1
+            continue
+        key = _keynorm(topic.get("topic", ""))
+        if not key:
+            continue
+        if state.is_taught(key, now=now):
+            skipped["taught"] += 1
+            continue
+        if any(key in _keynorm(h["hypothesis"].get("statement", ""))
+               for h in open_hyp):
+            skipped["hypothesis"] += 1
+            continue
+        if any(key in _keynorm(e.get("name", ""))
+               or key in _keynorm(e.get("features", {}).get("描述", ""))
+               for e in memory.entries.values()
+               if e.get("status", "active") != "superseded"):
+            skipped["memory"] += 1
+            continue
+        if any(i.get("source_trigger") == "TEACH_SUGGESTION"
+               and i.get("topic_key") == key and i.get("status") == "open"
+               for i in curiosity.items.values()):
+            skipped["existing"] += 1
+            continue
+        question = (f"主人上次提到的「{topic.get('topic', '')}」，"
+                    "我越想越觉得自己理解得半吊子，你有空给我讲讲？")
+        try:
+            qid = curiosity.add(question, "TEACH_SUGGESTION",
+                                topic.get("topic", ""), dedupe=False)
+            curiosity.mark(qid, "open", topic_key=key, tier_due="L1")
+        except Exception:
+            continue
+        state.record_suggestion(key, qid, now=now)
+        created.append(qid)
+    return {"created": created, "skipped": skipped}
+
+
+def maybe_weekly_survey(home, base, memory, curiosity,
+                        now: datetime | None = None) -> dict:
+    """G2：consolidate 内周频复查（失败静默、不欠账）。"""
+    now = now or datetime.now()
+    home = Path(home)
+    state = SurveyState(home / "survey_state.json")
+    if not state.due(now=now):
+        return {"ran": False, "reason": "not_due"}
+    result = run_survey(base, home, days=WEEKLY_DAYS,
+                        max_topics=WEEKLY_MAX_TOPICS, confirm=True,
+                        embedder_model=getattr(
+                            getattr(memory, "embedder", None),
+                            "model_tag", ""),
+                        now=now, call_cap=WEEKLY_CALL_CAP)
+    if result.get("status") != "ok":
+        state.mark_run(now=now)      # 本周算跑过，不欠账
+        return {"ran": False, "reason": result.get("status")}
+    report = result["report"]
+    prev = find_previous_report(home, before=now.date())
+    diff = diff_reports(prev, report)
+    report["diff"] = diff
+    _write(Path(result["json_path"]),
+           json.dumps(report, ensure_ascii=False, indent=2))
+    _write(Path(result["markdown_path"]), render_markdown(report))
+    suggestions = {"created": [], "skipped": {}}
+    try:
+        suggestions = suggest_teaching(report, memory, curiosity, state,
+                                       now=now)
+    except Exception as exc:
+        print(f"[周复查] 教学建议失败：{exc}", file=sys.stderr)
+    state.mark_run(now=now)
+    return {"ran": True, "diff": diff, "summary": diff["summary"],
+            "suggestions": suggestions,
+            "markdown_path": result["markdown_path"],
+            "probe_calls": report["probe_calls"],
+            "cache_hits": report["cache_hits"]}
+
+
 __all__ = ["run_survey", "load_logs", "extract_topics", "rank_topics",
            "build_plan", "render_markdown", "openclaw_root",
-           "DEFAULT_DAYS", "DEFAULT_MAX_TOPICS", "MAX_TOPICS_CAP"]
+           "diff_reports", "find_previous_report", "suggest_teaching",
+           "maybe_weekly_survey", "SurveyState",
+           "DEFAULT_DAYS", "DEFAULT_MAX_TOPICS", "MAX_TOPICS_CAP",
+           "WEEKLY_DAYS", "WEEKLY_MAX_TOPICS", "WEEKLY_CALL_CAP"]

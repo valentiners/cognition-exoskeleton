@@ -32,7 +32,7 @@ MATCH_TH = 0.62       # 复用 TempMemory.MATCH_TH（标定值，勿动）
 STATUSES = ("open", "self_solved", "answered", "muted", "expired",
             "refuted")   # refuted = 假设被证伪（W5）
 TRIGGERS = ("T1", "T2", "T3", "T4", "CONFLICT",
-            "HYPOTHESIS")   # CONFLICT=L2 冲突质疑；HYPOTHESIS=假设型（W5）
+            "HYPOTHESIS", "TEACH_SUGGESTION")   # CONFLICT=L2 冲突；HYPOTHESIS=W5；TEACH_SUGGESTION=G3
 
 
 def _now_iso(now: datetime | None = None) -> str:

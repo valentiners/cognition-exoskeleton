@@ -93,7 +93,8 @@ def collect_digest(memory, temp, curiosity, *, now: datetime | None = None) -> d
 def _has_material(digest: dict) -> bool:
     return bool(digest["learned"] or digest["updated"] or
                 digest["mistakes"] or digest["patches_today"] or
-                digest["curiosity_today"] or digest["temp_today"])
+                digest["curiosity_today"] or digest["temp_today"] or
+                digest.get("survey_summary"))
 
 
 def _material_text(digest: dict) -> str:
@@ -124,6 +125,8 @@ def _material_text(digest: dict) -> str:
                       + "，以后会更小心")
     if digest["temp_today"]:
         lines.append(f"还有 {digest['temp_today']} 个新事物先寄放在短期记忆里")
+    if digest.get("survey_summary"):
+        lines.append(digest["survey_summary"])
     return "\n".join(lines)
 
 
@@ -203,6 +206,19 @@ def consolidate(home, base, *, memory=None, temp=None, curiosity=None,
         except Exception as exc:
             print(f"[睡眠进程] 前瞻标签生成失败：{exc}", file=sys.stderr)
 
+    # G2 周复查（W7）：每周一次、预算封顶、失败静默
+    survey_result = {"ran": False, "reason": "skipped"}
+    if memory is not None and curiosity is not None:
+        try:
+            from .survey import maybe_weekly_survey
+            survey_result = maybe_weekly_survey(home, base, memory,
+                                                curiosity, now=now)
+            if survey_result.get("ran"):
+                digest["survey_summary"] = survey_result.get("summary", "")
+        except Exception as exc:
+            print(f"[睡眠进程] 周复查失败：{exc}", file=sys.stderr)
+            survey_result = {"ran": False, "reason": "error"}
+
     journal = None
     if _has_material(digest):
         compose = getattr(base, "compose_journal", None)
@@ -212,7 +228,8 @@ def consolidate(home, base, *, memory=None, temp=None, curiosity=None,
             except Exception as exc:
                 print(f"[睡眠进程] 日记写作失败：{exc}", file=sys.stderr)
     result = {"date": today, "ran": True, "digest": digest,
-              "ok": journal is not None, "foresight": foresight_stats}
+              "ok": journal is not None, "foresight": foresight_stats,
+              "survey": survey_result}
     if journal is None:
         result["reason"] = "no_material" if not _has_material(digest) \
             else "compose_failed"

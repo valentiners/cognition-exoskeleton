@@ -32,6 +32,7 @@ from .conflict import classify_conflict, pair_key
 from .curiosity import CuriosityQueue
 from .foresight import (ForesightState, InstinctStore, active_tags,
                         match_tags, route, warning_text)
+from .survey import SurveyState
 from . import hypothesis as hypo_mod
 from .doctor import _keynorm, latest_profile
 from .growth import last_consolidation
@@ -118,6 +119,7 @@ class Session:
         self.instinct = InstinctStore(self.home / "instinct_rules.json")
         self._foresight_used = 0
         self._turn_embedding = None
+        self.survey_state = SurveyState(self.home / "survey_state.json")
 
         self.ollama_host = (ollama_host or self.state.get("ollama_host")
                             or "http://localhost:11434")
@@ -405,6 +407,7 @@ class Session:
         try:
             changed = self.curiosity.expire()   # 好奇队列 TTL / 静音解禁
             self._expire_hypotheses(changed)     # W5：假设过期纯静默
+            self._expire_teach_suggestions(changed)  # G3：建议过期记 ignored
         except Exception as exc:
             print(f"[好奇队列] 过期检查失败：{exc}", file=sys.stderr)
 
@@ -671,6 +674,23 @@ class Session:
             self.foresight_state.decide_proposal(pid, False)
             return self._say("好，那我不擅自把它当规矩。")
 
+        if kind == "teach_suggestion":
+            self.state["pending"] = None
+            qid = p.get("qid", "")
+            key = p.get("topic_key", "")
+            if re.search(r"(算了|不用|别问|以后再说|取消|没空)", v):
+                self.curiosity.mark(qid, "muted")
+                self._record_suggestion("rejected", key)
+                return self._say("好，那我不问了，等你有空再说。")
+            try:
+                self.temp.add(v, modality="text")
+            except Exception as exc:
+                print(f"[周复查] 教学暂存失败：{exc}", file=sys.stderr)
+            self.curiosity.mark(qid, "answered", solved_source="master")
+            self._record_suggestion("taught", key)
+            self._invalidate_knowledge_cache(key)
+            return self._say("好，我记下来了，回头慢慢消化～")
+
         if kind == "arbitrate":
             if value == "child" or re.search(r"子类|幼体|分支|小的", v):
                 self.state["pending"] = {"kind": "naming", "text": p["text"],
@@ -818,6 +838,34 @@ class Session:
                                     solved_source="master")
         except Exception as exc:
             print(f"[假设] GUESS 结算失败：{exc}", file=sys.stderr)
+
+    def _record_suggestion(self, outcome: str, key: str):
+        """G3 采纳率：taught / ignored / rejected（只进统计，不进对话）。"""
+        if not key:
+            return
+        try:
+            self.survey_state.mark_outcome(key, outcome)
+        except Exception as exc:
+            print(f"[周复查] 采纳统计失败：{exc}", file=sys.stderr)
+
+    def _invalidate_knowledge_cache(self, key: str):
+        """主人刚教的主题：探测缓存按 key 失效（低摩擦，不等 30 天）。"""
+        if not key:
+            return
+        try:
+            if key in self.knowledge_cache.items:
+                self.knowledge_cache.items.pop(key, None)
+                self.knowledge_cache._persist()
+        except Exception:
+            pass
+
+    def _expire_teach_suggestions(self, qids: list[str]):
+        """建议过期：静默记 ignored（不追问）。"""
+        for qid in qids:
+            item = self.curiosity.get(qid)
+            if not item or item.get("source_trigger") != "TEACH_SUGGESTION":
+                continue
+            self._record_suggestion("ignored", item.get("topic_key", ""))
 
     # ---------- L3 前瞻推演（W6） ----------
     def _foresight_quota(self) -> int:
@@ -1226,6 +1274,8 @@ class Session:
             return None
         try:
             self.curiosity.mark(item["qid"], "muted")
+            if item.get("source_trigger") == "TEACH_SUGGESTION":
+                self._record_suggestion("rejected", item.get("topic_key", ""))
         except Exception as exc:
             print(f"[好奇队列] 静音失败：{exc}", file=sys.stderr)
             return None
@@ -1416,6 +1466,14 @@ class Session:
                     "curiosity_qid": item["qid"],
                     "at": _t.time(),
                 }
+            if item.get("source_trigger") == "TEACH_SUGGESTION":
+                self.state["pending"] = {
+                    "kind": "teach_suggestion",
+                    "qid": item["qid"],
+                    "topic_key": item.get("topic_key", ""),
+                    "curiosity_qid": item["qid"],
+                    "at": _t.time(),
+                }
             asked.append(self._curiosity_phrase(item))
         if asked:
             return "\n".join(asked)
@@ -1436,6 +1494,8 @@ class Session:
             return f"对了，有件事我拿不准——{question}"
         if trigger == "HYPOTHESIS":
             return f"对了，我有个猜想想跟你确认一下——{question}"
+        if trigger == "TEACH_SUGGESTION":
+            return question
         return f"对了，还有件事我挺好奇的——{question}"
 
     def _curiosity_l2(self) -> str:
@@ -1490,6 +1550,7 @@ class Session:
                 "last_consolidation": last_consolidation(self.home),
                 "temp": self.temp.stats(), "pending": self.state.get("pending"),
                 "curiosity": self.curiosity.stats(),
+                "survey": self.survey_state.stats(),
                 "autonomy": self.state.get("autonomy", "normal"),
                 "model_profile": profile and {
                     "verdict": profile.get("verdict"),
