@@ -234,6 +234,28 @@ python -m voiceofsoul.exo doctor                 # full physical on the current 
 python -m voiceofsoul.exo doctor --no-images     # skip the image exam (marked skipped)
 ```
 
+## Knowledge survey (G1)
+
+`exo survey` draws a knowledge-boundary map around the master's own conversations — a
+sampled report, not a full census. It reads the OpenClaw daily logs (read-only), extracts
+public knowledge topics, ranks them by frequency × recency (hard cap 15), and reuses the
+same three-way probe and 30-day cache as the runtime knowledge check.
+
+```bash
+python -m voiceofsoul.exo survey                 # estimate only, no probes spent
+python -m voiceofsoul.exo survey --yes           # run after the master confirms
+python -m voiceofsoul.exo survey --days 7 --max-topics 5 --yes
+```
+
+- **Estimate before spending**: without `--yes` it prints topics, cache hits and the net
+  probe calls, then stops. Topic extraction itself costs one call.
+- **Tiers**: 🟢 already known (not stored again) · 🟡 half-known / hallucination-prone
+  (teaching suggestion attached, advisory only) · 🔵 blank.
+- **Output**: Markdown + JSON under `<COGSOUL_HOME>/output/`, with model and embedder
+  versions in the header (a model swap makes old reports stale).
+- **Privacy**: private entities are filtered out at extraction; raw log text is never
+  copied into the report; nothing is written back to the logs or MEMORY.md.
+
 ## Sleep process (consolidation)
 
 Once a day, in quiet hours, the exoskeleton digests its own cognitive trail — what it
