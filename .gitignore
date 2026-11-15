@@ -44,3 +44,5 @@ _test_hypothesis.py
 _test_foresight.py
 foresight_state.json
 instinct_rules.json
+_test_survey_g2g3.py
+survey_state.json
