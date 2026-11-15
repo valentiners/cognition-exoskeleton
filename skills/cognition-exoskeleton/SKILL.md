@@ -259,6 +259,13 @@ python -m voiceofsoul.exo survey --days 7 --max-topics 5 --yes
   versions in the header (a model swap makes old reports stale).
 - **Privacy**: private entities are filtered out at extraction; raw log text is never
   copied into the report; nothing is written back to the logs or MEMORY.md.
+- **Weekly review (automatic, G2)**: once a week the sleep process re-runs the survey
+  (7-day window, ≤30 probe calls), diffs it against last week's JSON, and writes a one-line
+  summary into the Growth Journal.
+- **Teaching loop (G3)**: 🟡 topics become humanized teaching suggestions in the curiosity
+  queue — deduped against pending hypotheses, existing memories and existing suggestions;
+  a reply teaches through the normal temp-memory pipeline; expired suggestions vanish
+  silently (no re-asking). 🔵 topics never trigger teaching requests.
 
 ## Foresight (L3)
 
