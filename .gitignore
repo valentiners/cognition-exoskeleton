@@ -34,3 +34,6 @@ _old_ollama_tmp.py
 _test_consolidation.py
 _test_embedder_exam.py
 model_profile_*.json
+knowledge_probe_cache.json
+knowledge_probe_cache.json.tmp
+_test_knowledge_probe.py
