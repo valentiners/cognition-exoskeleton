@@ -46,3 +46,5 @@ foresight_state.json
 instinct_rules.json
 _test_survey_g2g3.py
 survey_state.json
+_test_backup.py
+backup/
