@@ -45,6 +45,9 @@ class CognitiveModule:
         # 1. 记忆库精确命中（分层检索 9.10：先高频层，未中静默扩到活跃层；休眠层不查）
         hits = self.memory.search(text, threshold=self.mem_th, layer="frequent") \
             or self.memory.search(text, threshold=self.mem_th, layer="active")
+        if not hits:
+            # 第二梯队（W3 §2.5）：一跳邻居补检（当前穷举索引下多为空，为 ANN 预留）
+            hits = self.memory.neighbor_probe(text, self.mem_th, layer="active")
         if hits:
             eid, score = hits[0]
             e = self.memory.entries[eid]
@@ -71,6 +74,7 @@ class CognitiveModule:
         if guess and guess != "未知事物" and conf >= self.base_th:
             related = [eid for eid, e in self.memory.entries.items()
                        if not is_dormant(e)
+                       and e.get("status", "active") != "superseded"
                        and guess in e.get("features", {}).get("描述", "")]
             if len(related) == 1:  # 类别唯一专名 → 同一性裁决确认后认出
                 eid = related[0]

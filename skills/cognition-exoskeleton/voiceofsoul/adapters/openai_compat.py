@@ -193,6 +193,14 @@ class OpenAICompatBaseModel:
         return [self._text(prompt)
                 for prompt in prompts.knowledge_probe_prompts(point, context)]
 
+    # ---------- conflict probe (W3) ----------
+    def conflict_probe(self, observation: str, entry_a: str,
+                       entry_b: str) -> dict | None:
+        """近似冲突性质裁决：identity / knowledge / none；拿不准返回 None。"""
+        raw = self._text(prompts.conflict_probe_prompt(
+            observation, entry_a, entry_b))
+        return prompts.parse_conflict_kind(raw)
+
     def perceive_image(self, image_b64: str, hint: str = "") -> str | None:
         if image_b64.startswith("data:"):
             image_url = image_b64

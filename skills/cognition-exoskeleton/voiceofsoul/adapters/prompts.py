@@ -137,6 +137,36 @@ def curiosity_distill_prompt(point: str, snippets: list[dict]) -> str:
     )
 
 
+# ------------------------------------------- conflict probe (W3)
+
+def conflict_probe_prompt(observation: str, entry_a: str, entry_b: str) -> str:
+    """近似冲突性质裁决：身份歧义 / 知识歧义 / 无关。提示词中性、不预设。"""
+    return (
+        "记忆里有两条相近的条目：\n"
+        f"A：{entry_a}\n"
+        f"B：{entry_b}\n"
+        f"新观察：{observation}\n\n"
+        "两条记忆都与新观察相似。请只判断这是什么性质的歧义，只输出一行：\n"
+        "- 身份歧义：新观察是一个具体的人/动物/个体，但可能是 A 也可能是 B（需要问主人）\n"
+        "- 知识歧义：A 和 B 是对同一个知识点的两种说法（可以查证）\n"
+        "- 无关：新观察其实和 A、B 都不算同一类，只是碰巧相似\n"
+        "不要解释，不要输出其他文字。"
+    )
+
+
+def parse_conflict_kind(raw: str | None) -> dict | None:
+    ans = (raw or "").strip()
+    if not ans:
+        return None
+    if "身份歧义" in ans or "身份" in ans:
+        return {"kind": "identity", "reason": ans[:120]}
+    if "知识歧义" in ans or "知识" in ans:
+        return {"kind": "knowledge", "reason": ans[:120]}
+    if "无关" in ans or "不冲突" in ans or "不同事物" in ans:
+        return {"kind": "none", "reason": ans[:120]}
+    return None
+
+
 def knowledge_probe_prompts(point: str, context: str = "") -> list[str]:
     """探测点 #13（W2）：同一知识点三种不同措辞的探测问法。
 

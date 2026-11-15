@@ -30,7 +30,7 @@ from pathlib import Path
 TTL_DAYS = 7          # 与 TempMemory.TTL_DAYS 同值（标定值，勿动）
 MATCH_TH = 0.62       # 复用 TempMemory.MATCH_TH（标定值，勿动）
 STATUSES = ("open", "self_solved", "answered", "muted", "expired")
-TRIGGERS = ("T1", "T2", "T3", "T4")
+TRIGGERS = ("T1", "T2", "T3", "T4", "CONFLICT")   # CONFLICT = L2 近似冲突质疑（W3）
 
 
 def _now_iso(now: datetime | None = None) -> str:
