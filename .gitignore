@@ -37,3 +37,4 @@ model_profile_*.json
 knowledge_probe_cache.json
 knowledge_probe_cache.json.tmp
 _test_knowledge_probe.py
+_test_l2_web.py
