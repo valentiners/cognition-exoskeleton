@@ -28,6 +28,7 @@ import time as _t
 from datetime import datetime
 from pathlib import Path
 
+from .conflict import classify_conflict, pair_key
 from .curiosity import CuriosityQueue
 from .doctor import _keynorm, latest_profile
 from .growth import last_consolidation
@@ -103,6 +104,10 @@ class Session:
         self._probe_used = 0        # 本轮已用探测额度
         self._knowledge_result = None  # 本轮探测结论（供 debug）
 
+        # L2 近似冲突（W3）：软存疑按“同对”累计，跨进程保留。
+        self.state.setdefault("conflict_soft_counts", {})
+        self._conflict_debug = ""
+
         self.ollama_host = (ollama_host or self.state.get("ollama_host")
                             or "http://localhost:11434")
         self.state["ollama_host"] = self.ollama_host
@@ -142,6 +147,7 @@ class Session:
             "autonomy": self.state.get("autonomy", "normal"),
             "curiosity_last_asked": self.state.get("curiosity_last_asked"),
             "curiosity_last_l2": self.state.get("curiosity_last_l2"),
+            "conflict_soft_counts": self.state.get("conflict_soft_counts", {}),
         }
         tmp = self.path.with_name("session.json.tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
@@ -288,6 +294,7 @@ class Session:
         self._curiosity_note = ""
         self._probe_used = 0
         self._knowledge_result = None
+        self._conflict_debug = ""
         self._maybe_consolidate()
         try:
             result = self._chat(text, image_b64)
@@ -301,6 +308,7 @@ class Session:
         except Exception as exc:
             print(f"[好奇心] 本轮追加失败，已静默跳过：{exc}", file=sys.stderr)
         result = self._decorate_knowledge(result)
+        result = self._decorate_conflict(result)
         self._save()
         return result
 
@@ -468,6 +476,8 @@ class Session:
                 return self._say(greet, debug=f"action=TEMP_HIT days={len(rec['days'])} sim={score}")
 
         act = self.cog.perceive(text)
+        # L2 近似冲突侦测（W3）：软存疑只进 debug，硬冲突进好奇队列。
+        self._check_conflict(act, text)
         # 好奇心观察（§4.6）：T1/T2 入队并先查后问；T3/T4 仅在开关打开时扫描。
         # 在任何分支之前观察，保证「主人没理」也留下学习信号。
         cqid = self._observe_curiosity(act, text, modality, desc)
@@ -546,6 +556,54 @@ class Session:
 
         def as_yes(s):
             return bool(re.search(r"是|对|嗯|好|没错|yes|yeah|yep", s, re.IGNORECASE))
+
+        if kind == "conflict":
+            cands = [c for c in (p.get("candidates") or []) if c in self.cog.memory.entries]
+            names = [self.cog.memory.entries[c].get("name", c) for c in cands]
+            named = next((c for c in cands
+                          if self.cog.memory.entries[c].get("name", "")
+                          and self.cog.memory.entries[c]["name"] in v), None)
+            if re.search(r"(记错|没有这|删掉|去掉|作废|收起来)", v):
+                target = named or (cands[1] if len(cands) > 1
+                                   else (cands[0] if cands else None))
+                if target:
+                    self.cog.memory.apply_vote(target, -1,
+                                               note="主人纠错：冲突裁决")
+                    nm = self.cog.memory.entries.get(target, {}).get("name", "它")
+                    self.state["pending"] = None
+                    self._resolve_curiosity(p)
+                    return self._say(f"好，我先把「{nm}」收起来，不再拿出来用；"
+                                     "哪天发现不对，你再叫它回来。")
+                self.state["pending"] = None
+                self._resolve_curiosity(p)
+                return self._say("好，那我先不拿它当准。")
+            if re.search(r"(同一个|同一个人|是一个人|就是它|一样)", v) \
+                    and not re.search(r"(不一样|不是)", v) and len(cands) >= 2:
+                a, b = cands[0], cands[1]
+                eb = self.cog.memory.entries.get(b, {})
+                self.cog.merge_into(
+                    a, eb.get("features", {}).get("描述", eb.get("name", "")),
+                    note="冲突裁决 MERGE")
+                self.cog.memory.apply_vote(b, -1,
+                                           note="冲突裁决：重复条目退休")
+                nm_a = self.cog.memory.entries.get(a, {}).get("name", "A")
+                nm_b = eb.get("name", "B")
+                self.state["pending"] = None
+                self._resolve_curiosity(p)
+                return self._say(f"那我把它并回「{nm_a}」这边，「{nm_b}」"
+                                 "这条先退休留个底～")
+            if re.search(r"(不是|不同|两个|两个人)", v):
+                self.state["pending"] = None
+                self._resolve_curiosity(p)
+                return self._say("好，那我把它们当两个不同的记着。")
+            if named:
+                self.cog.memory.touch(named)
+                self.state["pending"] = None
+                self._resolve_curiosity(p)
+                nm = self.cog.memory.entries.get(named, {}).get("name", "它")
+                return self._say(f"好，那我按「{nm}」记着。")
+            joined = "、".join(f"「{n}」" for n in names) or "它们"
+            return self._say(f"唔……你是说{joined}是同一个，还是两个不同的呀？")
 
         if kind == "arbitrate":
             if value == "child" or re.search(r"子类|幼体|分支|小的", v):
@@ -647,6 +705,90 @@ class Session:
             self.curiosity.mark(qid, status, solved_source=source)
         except Exception as exc:
             print(f"[好奇队列] 结案失败：{exc}", file=sys.stderr)
+
+    # ---------- L2 织网与信念修正（W3） ----------
+    def _check_conflict(self, act: dict, text: str):
+        """检索判定后（§2.1 末段）：两级近似冲突侦测。"""
+        if act.get("action") not in ("RECOGNIZED", "GUESS", "ARBITRATE"):
+            return
+        try:
+            ranked = self.cog.memory.ranked_matches(text, layer="active", limit=2)
+        except Exception as exc:
+            print(f"[冲突侦测] 排名失败，已跳过：{exc}", file=sys.stderr)
+            return
+        if len(ranked) < 2:
+            return
+        (a, sa), (b, sb) = ranked[0], ranked[1]
+        info = classify_conflict(sa, sb, mem_th=self.cog.mem_th)
+        if not info:
+            return
+        key = pair_key(a, b)
+        counts = self.state.setdefault("conflict_soft_counts", {})
+        if info["level"] == "soft":
+            counts[key] = int(counts.get(key, 0)) + 1
+            if counts[key] < 3:
+                self._conflict_debug = (f"soft {key} gap={info['gap']} "
+                                        f"count={counts[key]}")
+                return
+            counts[key] = 0
+            info = {**info, "level": "hard", "escalated": True}
+        self._start_conflict(act, text, a, b, info)
+
+    def _start_conflict(self, act: dict, text: str, a: str, b: str,
+                        info: dict):
+        """硬冲突：性质裁决 → 进好奇队列；知识型先查，身份型等主人定夺。"""
+        ea = self.cog.memory.entries.get(a) or {}
+        eb = self.cog.memory.entries.get(b) or {}
+        desc_a = ea.get("features", {}).get("描述", ea.get("name", ""))
+        desc_b = eb.get("features", {}).get("描述", eb.get("name", ""))
+        probe = getattr(self.cog.base, "conflict_probe", None)
+        kind = None
+        if probe:
+            try:
+                verdict = probe(text, desc_a, desc_b)
+                kind = verdict.get("kind") if verdict else None
+            except Exception as exc:
+                print(f"[冲突侦测] 性质裁决失败：{exc}", file=sys.stderr)
+        if kind is None:
+            # 回退：图像个体 / 私人实体 → 身份型；其余知识型
+            private = any(
+                e.get("provenance", {}).get("source_modality") == "image"
+                or not self.cog.is_common_knowledge(
+                    e.get("name", ""),
+                    e.get("features", {}).get("描述", ""))
+                for e in (ea, eb) if e)
+            kind = "identity" if private else "knowledge"
+        self._conflict_debug = (f"hard {pair_key(a, b)} kind={kind} "
+                                f"gap={info['gap']}"
+                                + (" escalated" if info.get("escalated") else ""))
+        if kind == "none":
+            return
+        name_a = ea.get("name", "A")
+        name_b = eb.get("name", "B")
+        if kind == "identity":
+            question = (f"「{name_a}」和「{name_b}」我感觉都像——刚才看到的"
+                        "是哪一个呀？要是其实是同一个，或者我哪个记错了，"
+                        "也直接告诉我。")
+        else:
+            question = (f"「{name_a}」和「{name_b}」的说法好像对不上，"
+                        "哪个才是对的呀？")
+        try:
+            qid = self.curiosity.add(question, "CONFLICT", text)
+            self.curiosity.mark(qid, "open", conflict_ids=[a, b],
+                                conflict_kind=kind, tier_due="L1")
+        except Exception as exc:
+            print(f"[冲突侦测] 质疑任务入队失败：{exc}", file=sys.stderr)
+            return
+        if kind == "knowledge":
+            self._curiosity_self_solve(qid, text)   # 先查后问（§4.9）
+
+    def _decorate_conflict(self, result: dict) -> dict:
+        if not self._conflict_debug:
+            return result
+        debug = (result.get("debug", "") or "").rstrip("；")
+        result["debug"] = ((debug + "；") if debug else "") + \
+            f"conflict={self._conflict_debug}"
+        return result
 
     # ---------- 知识边界探测（探测点 #13 / W2） ----------
     def _probe_quota(self) -> int:
@@ -912,6 +1054,15 @@ class Session:
                 break
             self.curiosity.mark(item["qid"], "open", tier_due="L2")
             self.state["curiosity_last_asked"] = item["qid"]
+            if item.get("conflict_ids"):
+                # 硬冲突的澄清问需要主人在下一条消息里回答 → 进入未决流程
+                self.state["pending"] = {
+                    "kind": "conflict",
+                    "text": item.get("stimulus", ""),
+                    "candidates": list(item.get("conflict_ids") or []),
+                    "curiosity_qid": item["qid"],
+                    "at": _t.time(),
+                }
             asked.append(self._curiosity_phrase(item))
         if asked:
             return "\n".join(asked)
@@ -928,6 +1079,8 @@ class Session:
             return f"有个地方我越想越不对劲：{question}"
         if trigger == "T4":
             return f"对了，{question}"
+        if trigger == "CONFLICT":
+            return f"对了，有件事我拿不准——{question}"
         return f"对了，还有件事我挺好奇的——{question}"
 
     def _curiosity_l2(self) -> str:
@@ -1005,6 +1158,8 @@ class Session:
                     emb, "model_tag", "")
                 n += 1
         self.cog.memory._persist()
+        # 换编码器后旧邻居清单失效，不自动解释（§3.3 / 任务书 §2.1）
+        self.cog.memory.invalidate_neighbors()
         m = 0
         for r in self.temp.records.values():
             r["embedding"] = emb.embed(r["desc"])
