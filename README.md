@@ -139,6 +139,16 @@ new input ──→ unified description ──→ permanent memory hit (≥0.78 
 
 Zero third-party dependencies (pure Python standard library), Python 3.9+.
 
+### Install as an OpenClaw skill (ClawHub)
+
+```bash
+openclaw skills install @valentiners/cognition-exoskeleton
+```
+
+The published folder is self-contained (kernel + golden test set) and MIT-0; the source
+repository below stays Apache-2.0. After installing, `openclaw skills info
+cognition-exoskeleton` should report **Ready** and *visible to model*.
+
 ### Real mode (local Ollama + browser)
 
 ```bash
@@ -209,7 +219,7 @@ Earlier versions are archived in `docs/` and the repo history.
 | Soul backup & restore (atomic, verified, revivable)                | ✅ v0.3.0      | §1.7 / §10.3 |
 | Conflict-band & foresight-threshold calibration (placeholders now) | ⏳ pending §6.5 | §6.5      |
 | Library packaging (`pyproject.toml`, kernel/service decoupling)        | ⏳ roadmap     | §10.3-#5   |
-| OpenClaw skill publish (MIT-0 on ClawHub; skill draft in `skills/`)  | ⏳ in progress | §10.2      |
+| OpenClaw skill publish (MIT-0 on ClawHub; v0.3.0 submitted 2026-11-23, security scan pending) | 🟡 submitted | §10.2      |
 | Video / real-world perception interface                              | ⏳ reserved    | §3.6       |
 | Memory observability UI (stats already expose dormancy & curiosity)  | ⏳ roadmap     | §10.3-#7   |
 | T3/T4 curiosity triggers calibration (currently off by default)      | ⏳ pending §6.5 | §4.6      |
